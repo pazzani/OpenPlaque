@@ -1,3 +1,1 @@
-"""
-OpenPlaque
-"""
+"""OpenPlaque package."""

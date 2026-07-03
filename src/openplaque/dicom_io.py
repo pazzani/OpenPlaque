@@ -1,6 +1,5 @@
-from openplaque.dicom_io import Study
+"""Future DICOM I/O module."""
 
-study = Study(r"C:\Users\pazzani\Dropbox\CTA\DICOM")
-
-print(study)
-
+class Study:
+    def __init__(self,path):
+        self.path=path
