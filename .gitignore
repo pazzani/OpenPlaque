@@ -1,0 +1,91 @@
+# ------------------------------------------------------------
+# OpenPlaque .gitignore
+# ------------------------------------------------------------
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# ---------- Jupyter ----------
+.ipynb_checkpoints/
+
+# ---------- VS Code ----------
+.vscode/
+
+# ---------- PyCharm ----------
+.idea/
+
+# ---------- macOS ----------
+.DS_Store
+
+# ---------- Windows ----------
+Thumbs.db
+desktop.ini
+
+# ---------- Logs ----------
+*.log
+
+# ---------- Medical Imaging ----------
+*.dcm
+*.DCM
+*.dicom
+
+# NIfTI
+*.nii
+*.nii.gz
+
+# MetaImage
+*.mhd
+*.raw
+
+# NRRD
+*.nrrd
+
+# VTK / Meshes
+*.vtk
+*.vtp
+*.vti
+*.stl
+*.ply
+*.obj
+
+# ---------- Large Archives ----------
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+
+# ---------- Generated Outputs ----------
+outputs/*
+!outputs/.gitkeep
+
+# ---------- Local Data ----------
+data/*
+!data/README.md
+
+# ---------- Temporary ----------
+*.tmp
+*.bak
+*.swp
+
+# ---------- Environment ----------
+.env
+
+# ---------- Colab ----------
+content/
