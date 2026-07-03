@@ -1,0 +1,5 @@
+from openplaque.dicom_io import Study
+
+study = Study(r"C:\CardiacCT_2026\DICOM")
+
+print(study)

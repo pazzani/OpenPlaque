@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openplaque"
+version = "0.1.0"
+description = "Open-source coronary CT angiography plaque analysis toolkit"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+
+authors = [
+    {name = "Michael Pazzani"}
+]
+
+dependencies = [
+    "numpy",
+    "scipy",
+    "pandas",
+    "pydicom",
+    "SimpleITK",
+    "matplotlib",
+    "scikit-image",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
