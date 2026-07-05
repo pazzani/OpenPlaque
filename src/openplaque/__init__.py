@@ -1,1 +1,0 @@
-"""OpenPlaque package."""
