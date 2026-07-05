@@ -1,12 +1,33 @@
-Model:
-  Name: Dataset001_CCTA_DHM
-  Paper: PLOS ONE 2026
-  Original nnU-Net: v2 (older plans format)
-  Tested with:
-    nnUNetv2: <your installed version>
-  Status:
-    ✓ Inference successful
-    ✓ Plans auto-converted
-    ✓ Produces plausible LAD plaque segmentation
-    
+name: Dataset001_CCTA_DHM
+
+paper:
+  title: Automatic Segmentation of Coronary Plaques in Coronary CT Angiography using Neural Networks
+  journal: PLOS ONE
+  year: 2026
+
+github: https://github.com/MM-DHM/nnUNet-Coronary-CTA-Segmentation
+
+input:
+  type: Curved coronary artery reformat
+  vessels:
+    - LAD
+    - RCA
+    - CX
+
+output_labels:
+  0: Background
+  1: Normal vessel
+  2: Plaque
+
+nnunet:
+  trainer: nnUNetTrainer
+  configuration: 3d_fullres
+  folds: [0, 1, 2, 3, 4]
+
+status:
+  inference_tested: true
+  sample_dataset_tested: false
+  notes:
+    - Old nnU-Net plans format warning
+    - Inference completed successfully
     
