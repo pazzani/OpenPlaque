@@ -1,0 +1,12 @@
+Model:
+  Name: Dataset001_CCTA_DHM
+  Paper: PLOS ONE 2026
+  Original nnU-Net: v2 (older plans format)
+  Tested with:
+    nnUNetv2: <your installed version>
+  Status:
+    ✓ Inference successful
+    ✓ Plans auto-converted
+    ✓ Produces plausible LAD plaque segmentation
+    
+    
