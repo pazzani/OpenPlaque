@@ -3,17 +3,20 @@ OpenPlaque boundary refinement.
 
 Experimental post-processing for nnU-Net plaque masks.
 
-Goal:
-    Reduce false-positive plaque boundary voxels that may represent lumen,
-    normal vessel wall, interpolation artifacts, or isolated noise.
+Defaults are set from boundary-refinement tuning results supplied in
+boundary_refinement_case_results.csv.
 
-Important:
-    This is research code only. It has not been clinically validated.
+Research software only. Not for clinical use.
 """
 
 from dataclasses import dataclass
+import os
 import numpy as np
 from scipy import ndimage as ndi
+import SimpleITK as sitk
+
+
+DEFAULT_REFINEMENT_PARAMS = {'remove_small': True, 'min_component_voxels': 80, 'trim_lumen_adjacent': False, 'lumen_distance_voxels': 0, 'erode_core': False, 'erosion_iterations': 0, 'low_hu_threshold': None, 'high_hu_threshold': None}
 
 
 @dataclass
@@ -66,189 +69,166 @@ class RefinementResult:
         print(f"Refined TPV:  {self.refined_tpv_mm3:.2f} mm³")
         print(f"Removed vol:  {self.removed_volume_mm3:.2f} mm³")
 
-    def show_removed_overlay(self, volume, z=None, vmin=-200, vmax=800):
-        import matplotlib.pyplot as plt
-
-        if z is None:
-            counts = np.sum(self.removed_mask, axis=(1, 2))
-            z = int(np.argmax(counts))
-
-        plt.figure(figsize=(8, 8))
-        plt.imshow(volume[z], cmap="gray", vmin=vmin, vmax=vmax)
-        plt.imshow(self.removed_mask[z], alpha=0.6)
-        plt.title(f"Removed plaque-boundary voxels, slice {z}")
-        plt.axis("off")
-        plt.show()
-
     def show_refined_overlay(self, volume, z=None, vmin=-200, vmax=800):
         import matplotlib.pyplot as plt
-
         if z is None:
             counts = np.sum(self.refined_mask == 2, axis=(1, 2))
             z = int(np.argmax(counts))
-
         plt.figure(figsize=(8, 8))
         plt.imshow(volume[z], cmap="gray", vmin=vmin, vmax=vmax)
         plt.imshow(self.refined_mask[z] == 2, alpha=0.6)
-        plt.title(f"Refined plaque mask, slice {z}")
         plt.axis("off")
+        plt.title(f"Refined plaque mask, slice {z}")
         plt.show()
+
+    def show_removed_overlay(self, volume, z=None, vmin=-200, vmax=800):
+        import matplotlib.pyplot as plt
+        if z is None:
+            counts = np.sum(self.removed_mask, axis=(1, 2))
+            z = int(np.argmax(counts))
+        plt.figure(figsize=(8, 8))
+        plt.imshow(volume[z], cmap="gray", vmin=vmin, vmax=vmax)
+        plt.imshow(self.removed_mask[z], alpha=0.6)
+        plt.axis("off")
+        plt.title(f"Removed plaque voxels, slice {z}")
+        plt.show()
+
+    def save_refined_mask(self, reference_image, path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        img = sitk.GetImageFromArray(self.refined_mask.astype("uint8"))
+        img.CopyInformation(reference_image)
+        sitk.WriteImage(img, path)
+        print("Saved:", path)
 
 
 def remove_small_components(mask, min_voxels=10, plaque_label=2):
-    """
-    Remove small disconnected plaque components.
-
-    This is useful for eliminating tiny speckles, but it does not address
-    lumen/wall boundary errors.
-    """
     plaque = mask == plaque_label
     labels, n = ndi.label(plaque)
-
+    if n == 0:
+        return mask.copy()
     sizes = np.bincount(labels.ravel())
-    keep_labels = np.where(sizes >= min_voxels)[0]
-    keep_labels = keep_labels[keep_labels != 0]
-
-    keep = np.isin(labels, keep_labels)
-
+    keep = np.zeros_like(plaque, dtype=bool)
+    for label_id, size in enumerate(sizes):
+        if label_id != 0 and size >= min_voxels:
+            keep |= labels == label_id
     refined = mask.copy()
     refined[plaque & ~keep] = 0
+    return refined
 
+
+def lumen_adjacent_trim(mask, vessel_label=1, plaque_label=2, distance_voxels=1):
+    if distance_voxels <= 0:
+        return mask.copy()
+    plaque = mask == plaque_label
+    vessel = mask == vessel_label
+    vessel_dilated = ndi.binary_dilation(vessel, iterations=distance_voxels)
+    remove = plaque & vessel_dilated
+    refined = mask.copy()
+    refined[remove] = 0
     return refined
 
 
 def erode_plaque_boundary(mask, iterations=1, plaque_label=2):
-    """
-    Conservative core-plaque mask using binary erosion.
-
-    This estimates a high-confidence plaque core by removing boundary voxels.
-    It will underestimate volume but can help quantify boundary uncertainty.
-    """
+    if iterations <= 0:
+        return mask.copy()
     plaque = mask == plaque_label
     core = ndi.binary_erosion(plaque, iterations=iterations)
-
     refined = mask.copy()
     refined[plaque & ~core] = 0
-
     return refined
 
 
-def lumen_adjacent_trim(mask,
-                        vessel_label=1,
-                        plaque_label=2,
-                        distance_voxels=1):
-    """
-    Remove plaque voxels immediately adjacent to the predicted vessel/lumen label.
-
-    Rationale:
-        If label 1 represents normal vessel/lumen region and label 2 plaque,
-        plaque voxels touching label 1 may be uncertain boundary voxels.
-    """
-    plaque = mask == plaque_label
-    vessel = mask == vessel_label
-
-    vessel_dilated = ndi.binary_dilation(vessel, iterations=distance_voxels)
-    remove = plaque & vessel_dilated
-
-    refined = mask.copy()
-    refined[remove] = 0
-
-    return refined
-
-
-def intensity_trim(volume,
-                   mask,
-                   plaque_label=2,
-                   high_hu_threshold=None,
-                   low_hu_threshold=None):
-    """
-    Remove plaque voxels outside a configurable HU range.
-
-    Use cautiously:
-        On contrast-enhanced CCTA, high HU may be calcium OR contrast-filled lumen.
-        This function is provided for experiments, not clinical interpretation.
-    """
+def intensity_trim(volume, mask, plaque_label=2, high_hu_threshold=None, low_hu_threshold=None):
     plaque = mask == plaque_label
     remove = np.zeros_like(plaque, dtype=bool)
-
     if high_hu_threshold is not None:
         remove |= plaque & (volume > high_hu_threshold)
-
     if low_hu_threshold is not None:
         remove |= plaque & (volume < low_hu_threshold)
-
     refined = mask.copy()
     refined[remove] = 0
-
     return refined
 
 
-def refine_plaque_mask(volume,
-                       mask,
-                       spacing,
-                       remove_small=True,
-                       min_component_voxels=10,
-                       trim_lumen_adjacent=True,
-                       lumen_distance_voxels=1,
-                       erode_core=False,
-                       erosion_iterations=1,
-                       high_hu_threshold=None,
-                       low_hu_threshold=None):
+def refine_plaque_mask(
+    volume,
+    mask,
+    spacing,
+    remove_small=None,
+    min_component_voxels=None,
+    trim_lumen_adjacent=None,
+    lumen_distance_voxels=None,
+    erode_core=None,
+    erosion_iterations=None,
+    high_hu_threshold="DEFAULT",
+    low_hu_threshold="DEFAULT",
+    use_defaults=True,
+):
     """
-    Apply a configurable sequence of experimental refinement steps.
+    Refine a plaque mask.
 
-    Recommended starting point:
-        remove_small=True
-        trim_lumen_adjacent=True
-        erode_core=False
-        high_hu_threshold=None
-
-    This returns a RefinementResult object and preserves non-plaque labels.
+    By default, this uses DEFAULT_REFINEMENT_PARAMS tuned on the supplied sample
+    dataset. Override any parameter by passing it explicitly.
     """
+    if use_defaults:
+        params = DEFAULT_REFINEMENT_PARAMS.copy()
+    else:
+        params = {
+            "remove_small": True,
+            "min_component_voxels": 0,
+            "trim_lumen_adjacent": False,
+            "lumen_distance_voxels": 0,
+            "erode_core": False,
+            "erosion_iterations": 0,
+            "high_hu_threshold": None,
+            "low_hu_threshold": None,
+        }
 
-    original = mask.copy()
-    refined = mask.copy()
-
-    params = {
+    overrides = {
         "remove_small": remove_small,
         "min_component_voxels": min_component_voxels,
         "trim_lumen_adjacent": trim_lumen_adjacent,
         "lumen_distance_voxels": lumen_distance_voxels,
         "erode_core": erode_core,
         "erosion_iterations": erosion_iterations,
-        "high_hu_threshold": high_hu_threshold,
-        "low_hu_threshold": low_hu_threshold,
     }
+    for k, v in overrides.items():
+        if v is not None:
+            params[k] = v
 
-    if remove_small:
+    if high_hu_threshold != "DEFAULT":
+        params["high_hu_threshold"] = high_hu_threshold
+    if low_hu_threshold != "DEFAULT":
+        params["low_hu_threshold"] = low_hu_threshold
+
+    original = mask.copy()
+    refined = mask.copy()
+
+    if params["remove_small"]:
         refined = remove_small_components(
-            refined,
-            min_voxels=min_component_voxels,
-            plaque_label=2,
+            refined, min_voxels=params["min_component_voxels"], plaque_label=2
         )
 
-    if trim_lumen_adjacent:
+    if params["trim_lumen_adjacent"]:
         refined = lumen_adjacent_trim(
             refined,
             vessel_label=1,
             plaque_label=2,
-            distance_voxels=lumen_distance_voxels,
+            distance_voxels=params["lumen_distance_voxels"],
         )
 
-    if high_hu_threshold is not None or low_hu_threshold is not None:
+    if params["high_hu_threshold"] is not None or params["low_hu_threshold"] is not None:
         refined = intensity_trim(
             volume,
             refined,
             plaque_label=2,
-            high_hu_threshold=high_hu_threshold,
-            low_hu_threshold=low_hu_threshold,
+            high_hu_threshold=params["high_hu_threshold"],
+            low_hu_threshold=params["low_hu_threshold"],
         )
 
-    if erode_core:
+    if params["erode_core"]:
         refined = erode_plaque_boundary(
-            refined,
-            iterations=erosion_iterations,
-            plaque_label=2,
+            refined, iterations=params["erosion_iterations"], plaque_label=2
         )
 
     removed = (original == 2) & (refined != 2)
@@ -258,6 +238,6 @@ def refine_plaque_mask(volume,
         refined_mask=refined,
         removed_mask=removed,
         spacing=spacing,
-        method="remove_small + lumen_adjacent + optional_intensity + optional_erosion",
+        method="tuned_default_boundary_refinement",
         parameters=params,
     )
