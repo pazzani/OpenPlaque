@@ -1,0 +1,11 @@
+numpy==2.0.2
+SimpleITK
+pydicom
+nibabel
+scipy
+scikit-image
+matplotlib
+pandas
+requests
+gdown
+nnunetv2
