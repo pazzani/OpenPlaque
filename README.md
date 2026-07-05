@@ -1,40 +1,38 @@
-# OpenPlaque v0.3 — Boundary Tuning, Standalone Notebook
+# OpenPlaque v0.4 Working Boundary Tuning
 
-This ZIP updates the `06_Boundary_Refinement_Parameter_Tuning.ipynb` notebook so it can run in a fresh Colab/runtime.
+This release replaces the earlier placeholder boundary-tuning code with executable code.
 
-## Main notebook
+## What is included
 
-```text
-notebooks/06_Boundary_Refinement_Parameter_Tuning.ipynb
+- `src/openplaque/tuning.py` — real grid-search tuning code.
+- `notebooks/06_Boundary_Refinement_Parameter_Tuning_STANDALONE_WORKING.ipynb` — fresh-runtime Colab notebook.
+- `tests/test_tuning_working.py` — smoke test on synthetic plaque masks.
+
+## Main notebook variables
+
+After running the tuning cell, these are defined:
+
+```python
+tuning_results          # pandas DataFrame, one row per vessel/parameter candidate
+selected_params         # best global parameter dictionary
+best_by_vessel          # best row for LAD/RCA/LCX individually
+selected_refinements    # refined masks using selected_params
 ```
 
-The notebook now performs the full setup before tuning:
+Display the best parameters:
 
-1. Mounts Google Drive.
-2. Defines Drive paths for the DICOM study ZIP, nnU-Net model ZIP, and output folder.
-3. Clones the OpenPlaque repository.
-4. Installs Colab requirements and extra packages.
-5. Writes the bundled v0.3 modules into `/content/OpenPlaque/src/openplaque`.
-6. Configures `nnUNet_raw`, `nnUNet_preprocessed`, and `nnUNet_results`.
-7. Verifies GPU with `nvidia-smi`.
-8. Extracts the nnU-Net model weights.
-9. Loads the full DICOM study.
-10. Automatically detects LAD/RCA/LCX curved reformat series.
-11. Runs segmentation.
-12. Runs boundary-refinement parameter tuning.
-13. Saves CSV, JSON, tuning HTML, final TPV HTML report, and tuned NIfTI masks.
+```python
+from openplaque.tuning import best_parameters, best_rows_by_vessel
 
-Default expected Drive files:
-
-```text
-/content/drive/MyDrive/OpenPlaque/Full_DICOM.zip
-/content/drive/MyDrive/OpenPlaque/models/Dataset001_CCTA_DHM-20260703T233210Z-3-001.zip
+selected_params = best_parameters(tuning_results)
+print(selected_params)
+display(best_rows_by_vessel(tuning_results))
 ```
 
-Outputs are written to:
+Outputs are saved to:
 
 ```text
-/content/drive/MyDrive/OpenPlaque/Segmentations/
+/content/drive/MyDrive/OpenPlaque/Boundary_Tuning/
 ```
 
 Research use only. Not for clinical decision-making.
