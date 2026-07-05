@@ -1,4 +1,4 @@
-# OpenPlaque v0.2: Auto-Series + TPV Uncertainty + HTML Report
+# OpenPlaque v0.3: Auto-Series + TPV Uncertainty + HTML Report
 
 Research-use-only OpenPlaque update that adds:
 
@@ -58,3 +58,22 @@ The UCLA fallback series are retained only as a fallback:
 If DICOM metadata includes artery names in `SeriesDescription`, `ProtocolName`, or related fields, those are used first.
 
 Not clinically validated. Not for diagnosis or treatment decisions.
+
+
+## v0.3 additions
+
+This package adds boundary-refinement parameter tuning.
+
+New files:
+
+- `src/openplaque/tuning.py` — grid-search tuning, scoring, CSV/JSON/HTML outputs.
+- `notebooks/06_Boundary_Refinement_Parameter_Tuning.ipynb` — run after segmentation reports are created.
+- `docs/v0_3_boundary_tuning_notes.md` — tuning method notes.
+
+Typical workflow:
+
+1. Run `05_End_to_End_OpenPlaque_v0_2_AutoSeries_Uncertainty_HTML.ipynb` through LAD/RCA/LCX segmentation.
+2. Run `06_Boundary_Refinement_Parameter_Tuning.ipynb`.
+3. Review `boundary_tuning_report.html` and `openplaque_tuned_tpv_report.html` in Google Drive.
+
+The tuning is unsupervised and heuristic. It should be treated as experimental research code, not clinical software.

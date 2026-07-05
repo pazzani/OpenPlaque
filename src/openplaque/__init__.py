@@ -10,3 +10,12 @@ try:
     from .report import write_html_report
 except Exception:
     pass
+
+try:
+    from .tuning import (
+        tune_boundary_parameters,
+        apply_selected_refinement,
+        write_tuning_html_report,
+    )
+except Exception:
+    pass
