@@ -68,3 +68,8 @@ The selected parameter JSON can be loaded later and applied to UCLA or any other
 ## Important
 
 Research use only. Not clinically validated. Cross-validation improves parameter defensibility, but outputs still require visual QC and expert review.
+
+
+## GitHub-based clean Colab update
+
+The notebook `notebooks/07_CV_Boundary_Parameter_Selection_Clean_Colab.ipynb` now clones or updates `https://github.com/pazzani/OpenPlaque.git` directly. It does not require `OpenPlaque_v0_5_CV_Boundary_Tuning.zip` inside Colab. Make sure the GitHub repo contains `src/openplaque/cv_tuning.py` and the current `boundary.py` before running.
