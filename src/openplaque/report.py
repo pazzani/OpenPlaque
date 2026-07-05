@@ -7,8 +7,16 @@ import base64
 import numpy as np
 
 
+def _mask_positive(mask, label=2):
+    arr = np.asarray(mask)
+    if label is None or (arr.size and np.nanmax(arr) <= 1):
+        return arr > 0
+    return arr == label
+
+
 def _best_slice(mask, label=2):
-    counts = np.sum(mask == label, axis=(1, 2))
+    pos = _mask_positive(mask, label=label)
+    counts = np.sum(pos, axis=(1, 2))
     return int(np.argmax(counts)) if counts.size else 0
 
 
@@ -20,7 +28,7 @@ def save_overlay_png(volume, mask, path, title, z=None, label=2, vmin=-200, vmax
     path.parent.mkdir(parents=True, exist_ok=True)
     plt.figure(figsize=(6, 6))
     plt.imshow(volume[z], cmap="gray", vmin=vmin, vmax=vmax)
-    plt.imshow(mask[z] == label, alpha=0.45)
+    plt.imshow(_mask_positive(mask, label=label)[z], alpha=0.45)
     plt.title(f"{title} — slice {z}")
     plt.axis("off")
     plt.tight_layout()
