@@ -1,15 +1,23 @@
-# OpenPlaque Default Boundary Refinement
+# OpenPlaque Volume-Based Boundary Tuning
 
-Updates `src/openplaque/boundary.py` to use tuned default parameters.
+This update replaces absolute voxel-count component filtering with physical
+minimum component volume in mm³.
 
-Default params:
+## Why
 
-```python
-{'remove_small': True, 'min_component_voxels': 80, 'trim_lumen_adjacent': False, 'lumen_distance_voxels': 0, 'erode_core': False, 'erosion_iterations': 0, 'low_hu_threshold': None, 'high_hu_threshold': None}
-```
+The previous default `min_component_voxels=80` was too aggressive for small-vessel
+findings and removed all LCX plaque in the UCLA test.
 
-Includes standalone Colab notebook:
+## New tuning parameters
+
+- `min_component_volume_mm3`
+- `lumen_distance_voxels`
+- optional `low_hu_threshold`
+- optional `high_hu_threshold`
+
+## Files
 
 ```text
-notebooks/07_UCLA_TPV_Tuned_Default_Refinement.ipynb
+src/openplaque/boundary_volume.py
+notebooks/08_Volume_Based_Boundary_Tuning.ipynb
 ```
