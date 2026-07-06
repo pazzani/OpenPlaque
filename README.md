@@ -1,67 +1,81 @@
-# OpenPlaque v0.6 — 5-Fold CV Boundary Parameter Selection
+# OpenPlaque Repository Additions: 5-Fold CV Boundary Tuning
 
-This release uses labeled sample data to select boundary-refinement parameters by 5-fold cross-validation.
+This ZIP contains files intended to be committed into the OpenPlaque GitHub repository.
+
+It removes the notebook dependency on copying code from a ZIP. After these files are committed, the clean Colab notebook simply clones/pulls OpenPlaque from GitHub and imports `openplaque.cv_boundary_tuning` directly.
+
+## Files to add/update
+
+```text
+src/openplaque/boundary.py
+src/openplaque/cv_boundary_tuning.py
+notebooks/07_5Fold_CV_Boundary_Parameter_Selection_Clean_Colab_GitHub.ipynb
+tests/test_cv_boundary_tuning.py
+docs/5fold_cv_boundary_tuning_notes.md
+```
+
+`src/openplaque/__init__.py` does not need to be modified for the notebook because it imports directly from `openplaque.cv_boundary_tuning`. If you want package-level exports, add:
+
+```python
+try:
+    from .cv_boundary_tuning import *
+except Exception:
+    pass
+```
 
 ## Main notebook
 
 ```text
-notebooks/07_5Fold_CV_Boundary_Parameter_Selection_Clean_Colab.ipynb
+notebooks/07_5Fold_CV_Boundary_Parameter_Selection_Clean_Colab_GitHub.ipynb
 ```
 
-The notebook runs from a clean Colab GPU runtime. It:
+The notebook:
 
 1. Mounts Google Drive.
 2. Clones/pulls OpenPlaque from GitHub.
-3. Installs requirements.
-4. Writes the v0.6 CV tuning module into the GitHub checkout, so no ZIP upload is needed inside Colab.
-5. Extracts the nnU-Net model weights from Drive.
+3. Installs dependencies.
+4. Verifies `openplaque.cv_boundary_tuning` is present in the GitHub checkout.
+5. Extracts the nnU-Net model from Drive.
 6. Downloads or locates the labeled sample dataset.
-7. Finds image/label pairs such as:
+7. Collects paired `*_0000.nii.gz` images and matching label masks.
+8. Generates or reuses nnU-Net predictions.
+9. Runs 5-fold supervised parameter-selection cross-validation.
+10. Saves CSV/JSON/HTML reports to Drive.
+
+## Expected labeled sample data
+
+Old sample dataset layout:
 
 ```text
-P02_LAD_axial_0000.nii.gz   # CT input image
-P02_LAD_axial.nii.gz        # label mask, values 0/1/2
+Sample_Dataset/
+  P02_LAD_axial_0000.nii.gz
+  P02_LAD_axial.nii.gz
 ```
 
-8. Runs nnU-Net prediction once for all sample cases, using cached predictions when available.
-9. Evaluates every boundary-refinement parameter combination against the labels.
-10. Performs true 5-fold parameter-selection CV:
-    - choose best parameters on 4 folds
-    - test those parameters on the held-out fold
-11. Selects final parameters using all sample cases.
-12. Saves CSV, JSON, and HTML reports.
+or nnU-Net raw layout:
+
+```text
+Dataset001_CCTA_DHM/
+  imagesTr/*_0000.nii.gz
+  labelsTr/*.nii.gz
+```
 
 ## Outputs
 
 ```text
-/content/drive/MyDrive/OpenPlaque/CV_Boundary_Tuning_v06/
+/content/drive/MyDrive/OpenPlaque/CV_Boundary_Tuning/
   predictions/
-  cv_all_case_parameter_results.csv
-  cv_full_dataset_parameter_summary.csv
-  cv_fold_assignments.csv
-  cv_heldout_selected_parameter_results.csv
-  cv_selected_parameters_by_fold.csv
+  cv_all_case_results.csv
+  cv_heldout_results.csv
+  cv_selected_by_fold.csv
   cv_best_boundary_parameters.json
-  cv_boundary_tuning_report.html
+  cv_report.html
 ```
 
-## Data expected
+## Test
 
-The notebook first tries to download the old sample dataset Google Drive folder used by `06_BoundaryRefinement_Tuning.ipynb`. It also supports:
-
-```text
-/content/drive/MyDrive/OpenPlaque/Sample_Dataset
-/content/drive/MyDrive/OpenPlaque/Sample_Dataset.zip
-/content/drive/MyDrive/OpenPlaque/Dataset001_CCTA_DHM
-/content/drive/MyDrive/OpenPlaque/Dataset001_CCTA_DHM.zip
+```bash
+PYTHONPATH=src pytest -q tests/test_cv_boundary_tuning.py
 ```
 
-## Model expected
-
-```text
-/content/drive/MyDrive/OpenPlaque/models/Dataset001_CCTA_DHM-20260703T233210Z-3-001.zip
-```
-
-## Important
-
-Research use only. Not clinically validated. The selected parameters should be visually checked before applying to new patient studies.
+Research use only. Not clinically validated and not for clinical decision-making.
