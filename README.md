@@ -1,72 +1,53 @@
-# OpenPlaque Repository Additions: Bayesian Boundary Parameter Tuning
+# OpenPlaque repository additions: run optimized boundary refinement on new data
 
-This repository-ready package adds an Optuna Bayesian-optimization workflow for OpenPlaque boundary-refinement parameters.
+This package adds files for applying already-selected boundary-refinement parameters to a new CCTA study, such as the UCLA case.
 
-## Main change
+It does **not** tune parameters. It consumes the current tuning JSON format directly:
 
-Instead of brute-forcing the full expanded grid, this version:
-
-1. runs nnU-Net **once per labeled sample case**,
-2. saves predictions to a reusable compressed Google Drive archive,
-3. restores predictions from that archive in later clean Colab runs,
-4. uses Optuna TPESampler Bayesian/sequential optimization to search downstream boundary-refinement parameters,
-5. evaluates each trial on **all labeled sample cases**.
-
-No cross-validation and no bootstrap are used in this version.
-
-## Notebook
-
-```text
-notebooks/09_Bayesian_Boundary_Parameter_Tuning_CachedPredictions_GitHub.ipynb
+```json
+{
+  "final_parameters_selected_on_all_cases": {
+    "min_component_voxels": 25,
+    "lumen_distance_voxels": 1,
+    "high_hu_threshold": null,
+    "low_hu_threshold": null,
+    "closing_radius_voxels": 1,
+    "fill_holes": true,
+    "min_plaque_length_mm": 2.0,
+    "connectivity": 26,
+    "adaptive_hu_thresholds": false,
+    "erode_core": false,
+    "erosion_iterations": 1
+  }
+}
 ```
 
-The notebook clones/pulls OpenPlaque from GitHub and expects these additions to be committed to the repository.
+No extended metadata wrapper is required.
 
-## Source additions
+## Files
+
+- `src/openplaque/run_new_data.py` — helpers to load current-format best-parameter JSON, apply optimized refinement, save masks/CSV/HTML.
+- `notebooks/10_Run_Optimized_Boundary_On_New_Data_GitHub.ipynb` — clean Colab notebook for UCLA/new-data inference.
+- `tests/test_run_new_data.py` — syntax/format smoke tests.
+
+## Expected Drive inputs
 
 ```text
-src/openplaque/boundary.py
-src/openplaque/boundary_parameter_tuning.py
+/content/drive/MyDrive/OpenPlaque/Full_DICOM.zip
+/content/drive/MyDrive/OpenPlaque/models/Dataset001_CCTA_DHM-20260703T233210Z-3-001.zip
+/content/drive/MyDrive/OpenPlaque/Boundary_Parameter_Tuning/best_boundary_parameters_bayesian.json
 ```
 
-## Parameters optimized
-
-Bayesian search space:
-
-- `min_component_voxels`: `[1, 5, 10, 25, 50, 100]`
-- `lumen_distance_voxels`: integer `0..3`
-- `high_hu_threshold`: `[None, 650, 700, 850, 1000, 1200]`
-- `low_hu_threshold`: `[None, -150, -100, -50, 0]`
-- `closing_radius_voxels`: integer `0..2`
-- `fill_holes`: `[False, True]`
-- `min_plaque_length_mm`: `[0, 1, 2, 3, 5]`
-- `connectivity`: `[6, 18, 26]`
-- `adaptive_hu_thresholds`: `[False, True]`
-- `erode_core`: fixed `False`
-- `erosion_iterations`: fixed `1`
+The notebook also checks for `best_boundary_parameters.json` and alternate `Boundary_Tuning` locations.
 
 ## Outputs
 
-Saved to Google Drive under:
-
 ```text
-/content/drive/MyDrive/OpenPlaque/Boundary_Parameter_Tuning_Bayesian/
+/content/drive/MyDrive/OpenPlaque/New_Data_Optimized_Boundary/
+  new_data_tpv_summary.csv
+  new_data_optimized_tpv_report.html
+  masks/*.nii.gz
+  overlays/*.png
 ```
 
-Includes:
-
-- `nnunet_prediction_cache.zip`
-- `bayesian_trial_case_results.csv`
-- `bayesian_trial_summary.csv`
-- `best_boundary_parameters_bayesian.json`
-- `bayesian_boundary_parameter_tuning_report.html`
-
-## Scoring
-
-The supervised score is:
-
-```text
-0.35*Dice + 0.20*IoU + 0.20*(1 - min(abs TPV error fraction, 1)) + 0.15*Precision + 0.10*Recall
-```
-
-Research use only. Not clinically validated.
+Research use only. Not clinically validated. Not for diagnosis or medical decision-making.
