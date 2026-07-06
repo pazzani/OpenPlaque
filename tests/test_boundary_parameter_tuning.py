@@ -25,7 +25,7 @@ def test_refine_added_parameters_smoke():
     vol = np.zeros((8, 8, 8), dtype=np.float32)
     mask = np.zeros((8, 8, 8), dtype=np.uint8)
     mask[2:5, 2:5, 2:5] = 2
-    out = refine_plaque_mask(vol, mask, (1, 1, 1), closing_radius_voxels=1, fill_holes=True, connectivity=26)
+    out = refine_plaque_mask(vol, mask, (1, 1, 1), closing_radius_voxels=1, fill_holes=True, min_plaque_length_mm=1, connectivity=26, adaptive_hu_thresholds=True)
     assert out.refined_mask.shape == mask.shape
     assert out.refined_plaque_voxels > 0
 
@@ -55,6 +55,8 @@ def test_parameter_tuning_end_to_end_with_cached_prediction():
             'closing_radius_voxels': [0],
             'fill_holes': [False],
             'connectivity': [26],
+            'min_plaque_length_mm': [0, 2],
+            'adaptive_hu_thresholds': [False, True],
             'erode_core': [False],
             'erosion_iterations': [1],
         }

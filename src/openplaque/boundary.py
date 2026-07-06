@@ -168,6 +168,57 @@ def fill_plaque_holes(mask, plaque_label=2):
     return refined
 
 
+
+def remove_short_plaque_components(mask, spacing, min_length_mm=0.0, plaque_label=2, connectivity=26):
+    """Remove plaque components whose axial/centerline extent is shorter than min_length_mm.
+
+    The sample coronary reformats are stored as 3D arrays with the vessel running
+    primarily along the slice axis. This approximates centerline length by the
+    component extent along array axis 0 times the z spacing. If min_length_mm <= 0,
+    no filtering is applied.
+    """
+    if min_length_mm is None or float(min_length_mm) <= 0:
+        return mask
+    plaque = mask == plaque_label
+    labels, n = ndi.label(plaque, structure=_structure_for_connectivity(connectivity))
+    if n == 0:
+        return mask
+    z_spacing = float(spacing[2]) if len(spacing) >= 3 else 1.0
+    keep = np.zeros_like(plaque, dtype=bool)
+    objects = ndi.find_objects(labels)
+    for label_idx, slc in enumerate(objects, start=1):
+        if slc is None:
+            continue
+        z0, z1 = slc[0].start, slc[0].stop
+        length_mm = max(0.0, (z1 - z0) * z_spacing)
+        if length_mm >= float(min_length_mm):
+            keep |= labels == label_idx
+    refined = mask.copy()
+    refined[plaque & ~keep] = 0
+    return refined
+
+
+def adaptive_intensity_trim(volume, mask, plaque_label=2, vessel_label=1,
+                            low_margin_hu=650, high_margin_hu=700,
+                            absolute_low_floor_hu=-100, absolute_high_ceiling_hu=1200):
+    """Remove plaque voxels outside broad HU bounds adapted to lumen attenuation.
+
+    The lumen/vessel label median is used as a rough attenuation reference. Bounds
+    are intentionally broad to avoid deleting plausible plaque:
+
+        low  = max(absolute_low_floor_hu, lumen_median - low_margin_hu)
+        high = min(absolute_high_ceiling_hu, lumen_median + high_margin_hu)
+
+    If no vessel voxels are available, the mask is returned unchanged.
+    """
+    vessel_vals = np.asarray(volume)[np.asarray(mask) == vessel_label]
+    if vessel_vals.size == 0:
+        return mask
+    lumen_median = float(np.median(vessel_vals))
+    low = max(float(absolute_low_floor_hu), lumen_median - float(low_margin_hu))
+    high = min(float(absolute_high_ceiling_hu), lumen_median + float(high_margin_hu))
+    return intensity_trim(volume, mask, plaque_label=plaque_label, high_hu_threshold=high, low_hu_threshold=low)
+
 def refine_plaque_mask(
     volume,
     mask,
@@ -182,7 +233,9 @@ def refine_plaque_mask(
     low_hu_threshold=None,
     closing_radius_voxels=0,
     fill_holes=False,
+    min_plaque_length_mm=0.0,
     connectivity=26,
+    adaptive_hu_thresholds=False,
 ):
     """Apply configurable experimental refinement steps.
 
@@ -193,7 +246,9 @@ def refine_plaque_mask(
     - low_hu_threshold
     - closing_radius_voxels
     - fill_holes
+    - min_plaque_length_mm
     - connectivity
+    - adaptive_hu_thresholds
 
     erode_core/erosion_iterations are normally fixed for the main estimate and
     used separately for conservative core/uncertainty estimates.
@@ -212,7 +267,9 @@ def refine_plaque_mask(
         "low_hu_threshold": low_hu_threshold,
         "closing_radius_voxels": closing_radius_voxels,
         "fill_holes": fill_holes,
+        "min_plaque_length_mm": min_plaque_length_mm,
         "connectivity": connectivity,
+        "adaptive_hu_thresholds": adaptive_hu_thresholds,
     }
 
     if closing_radius_voxels and int(closing_radius_voxels) > 0:
@@ -224,8 +281,14 @@ def refine_plaque_mask(
     if remove_small:
         refined = remove_small_components(refined, min_voxels=min_component_voxels, plaque_label=2, connectivity=int(connectivity))
 
+    if min_plaque_length_mm is not None and float(min_plaque_length_mm) > 0:
+        refined = remove_short_plaque_components(refined, spacing=spacing, min_length_mm=float(min_plaque_length_mm), plaque_label=2, connectivity=int(connectivity))
+
     if trim_lumen_adjacent and int(lumen_distance_voxels) > 0:
         refined = lumen_adjacent_trim(refined, vessel_label=1, plaque_label=2, distance_voxels=int(lumen_distance_voxels), connectivity=int(connectivity))
+
+    if adaptive_hu_thresholds:
+        refined = adaptive_intensity_trim(volume, refined, plaque_label=2, vessel_label=1)
 
     if high_hu_threshold is not None or low_hu_threshold is not None:
         refined = intensity_trim(volume, refined, plaque_label=2, high_hu_threshold=high_hu_threshold, low_hu_threshold=low_hu_threshold)

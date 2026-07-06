@@ -1,4 +1,4 @@
-# OpenPlaque Repository Additions: Supervised Boundary Parameter Tuning
+# OpenPlaque Repository Additions: Supervised Boundary Parameter Tuning with Expanded Grid
 
 This release replaces 5-fold CV with full labeled-sample parameter evaluation.
 
@@ -36,15 +36,17 @@ Default grid:
     "lumen_distance_voxels": [0, 1, 2],
     "high_hu_threshold": [None, 700, 850, 1000],
     "low_hu_threshold": [None, -100, -50],
-    "closing_radius_voxels": [0, 1],
+    "closing_radius_voxels": [0, 1, 2],
     "fill_holes": [False, True],
+    "min_plaque_length_mm": [0, 1, 2, 3],
     "connectivity": [6, 18, 26],
+    "adaptive_hu_thresholds": [False, True],
     "erode_core": [False],
     "erosion_iterations": [1],
 }
 ```
 
-Total: 2,160 parameter combinations.
+Total: 25,920 parameter combinations.
 
 For a fast smoke test, the notebook also exposes `SMALL_GRID`.
 

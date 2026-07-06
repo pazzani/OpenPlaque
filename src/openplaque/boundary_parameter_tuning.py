@@ -45,7 +45,9 @@ PARAM_COLUMNS = [
     "low_hu_threshold",
     "closing_radius_voxels",
     "fill_holes",
+    "min_plaque_length_mm",
     "connectivity",
+    "adaptive_hu_thresholds",
     "erode_core",
     "erosion_iterations",
 ]
@@ -57,9 +59,11 @@ DEFAULT_GRID: dict[str, Sequence[Any]] = {
     "high_hu_threshold": [None, 700, 850, 1000],
     "low_hu_threshold": [None, -100, -50],
     # Added parameters.
-    "closing_radius_voxels": [0, 1],
+    "closing_radius_voxels": [0, 1, 2],
     "fill_holes": [False, True],
+    "min_plaque_length_mm": [0, 1, 2, 3],
     "connectivity": [6, 18, 26],
+    "adaptive_hu_thresholds": [False, True],
     # Fixed for main estimate; core masks can be generated separately.
     "erode_core": [False],
     "erosion_iterations": [1],
@@ -72,7 +76,9 @@ SMALL_GRID: dict[str, Sequence[Any]] = {
     "low_hu_threshold": [None],
     "closing_radius_voxels": [0, 1],
     "fill_holes": [False],
+    "min_plaque_length_mm": [0, 2],
     "connectivity": [26],
+    "adaptive_hu_thresholds": [False, True],
     "erode_core": [False],
     "erosion_iterations": [1],
 }
@@ -252,7 +258,9 @@ def iter_parameter_grid(parameter_grid: Optional[Mapping[str, Sequence[Any]]] = 
         params["lumen_distance_voxels"] = int(params["lumen_distance_voxels"])
         params["closing_radius_voxels"] = int(params["closing_radius_voxels"])
         params["fill_holes"] = bool(params["fill_holes"])
+        params["min_plaque_length_mm"] = float(params["min_plaque_length_mm"])
         params["connectivity"] = int(params["connectivity"])
+        params["adaptive_hu_thresholds"] = bool(params["adaptive_hu_thresholds"])
         params["erode_core"] = bool(params["erode_core"])
         params["erosion_iterations"] = int(params["erosion_iterations"])
         yield candidate_id, params
@@ -322,7 +330,9 @@ def evaluate_case_grid(case: SampleCase, pred_dir: str | Path, parameter_grid: O
             low_hu_threshold=params["low_hu_threshold"],
             closing_radius_voxels=params["closing_radius_voxels"],
             fill_holes=params["fill_holes"],
+            min_plaque_length_mm=params["min_plaque_length_mm"],
             connectivity=params["connectivity"],
+            adaptive_hu_thresholds=params["adaptive_hu_thresholds"],
         )
         m = mask_metrics(ref.refined_mask, label, spacing=spacing)
         rows.append({
@@ -375,7 +385,9 @@ def params_from_summary_row(row: Mapping[str, Any]) -> dict[str, Any]:
             val = None
         elif col in ("min_component_voxels", "lumen_distance_voxels", "closing_radius_voxels", "connectivity", "erosion_iterations"):
             val = int(val)
-        elif col in ("erode_core", "fill_holes"):
+        elif col == "min_plaque_length_mm":
+            val = float(val)
+        elif col in ("erode_core", "fill_holes", "adaptive_hu_thresholds"):
             val = bool(val)
         params[col] = val
     params["remove_small"] = int(params["min_component_voxels"]) > 0

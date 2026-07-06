@@ -18,7 +18,9 @@ Set `OVERWRITE_PREDICTIONS = True` only when intentionally regenerating predicti
 - `low_hu_threshold`: removes predicted plaque below this HU threshold; `None` disables it.
 - `closing_radius_voxels`: morphological closing radius to smooth/fill small breaks in plaque masks.
 - `fill_holes`: fills enclosed holes within plaque components.
+- `min_plaque_length_mm`: removes short plaque components using approximate axial/centerline extent.
 - `connectivity`: 3D connectivity used for components and morphology: 6, 18, or 26.
+- `adaptive_hu_thresholds`: uses lumen attenuation to set broad HU trimming bounds.
 - `erode_core`: fixed false for main parameter selection; conservative core masks can be generated separately.
 - `erosion_iterations`: fixed 1.
 
