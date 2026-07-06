@@ -1,81 +1,81 @@
-# OpenPlaque Repository Additions: 5-Fold CV Boundary Tuning
+# OpenPlaque Repository Additions: Supervised Boundary Parameter Tuning
 
-This ZIP contains files intended to be committed into the OpenPlaque GitHub repository.
+This release replaces 5-fold CV with full labeled-sample parameter evaluation.
 
-It removes the notebook dependency on copying code from a ZIP. After these files are committed, the clean Colab notebook simply clones/pulls OpenPlaque from GitHub and imports `openplaque.cv_boundary_tuning` directly.
+## Why no cross-validation?
 
-## Files to add/update
+Boundary refinement is deterministic post-processing after a fixed nnU-Net model. The efficient and appropriate workflow is:
+
+1. Run nnU-Net once per labeled sample case.
+2. Cache the predictions locally.
+3. Save the predictions as a compressed ZIP archive on Google Drive.
+4. On later clean Colab runs, restore predictions from that archive and skip nnU-Net inference.
+5. Evaluate every boundary-refinement parameter set on all cached predictions.
+4. Compare each refined mask against the expert label.
+5. Select the parameter set with the best average supervised metrics.
+
+No bootstrap is included.
+
+## Files
 
 ```text
 src/openplaque/boundary.py
-src/openplaque/cv_boundary_tuning.py
-notebooks/07_5Fold_CV_Boundary_Parameter_Selection_Clean_Colab_GitHub.ipynb
-tests/test_cv_boundary_tuning.py
-docs/5fold_cv_boundary_tuning_notes.md
+src/openplaque/boundary_parameter_tuning.py
+notebooks/08_Boundary_Parameter_Tuning_CachedPredictions_GitHub.ipynb
+docs/boundary_parameter_tuning_cached_predictions.md
+tests/test_boundary_parameter_tuning.py
 ```
 
-`src/openplaque/__init__.py` does not need to be modified for the notebook because it imports directly from `openplaque.cv_boundary_tuning`. If you want package-level exports, add:
+## Parameter grid
+
+Default grid:
 
 ```python
-try:
-    from .cv_boundary_tuning import *
-except Exception:
-    pass
+{
+    "min_component_voxels": [1, 5, 10, 25, 50],
+    "lumen_distance_voxels": [0, 1, 2],
+    "high_hu_threshold": [None, 700, 850, 1000],
+    "low_hu_threshold": [None, -100, -50],
+    "closing_radius_voxels": [0, 1],
+    "fill_holes": [False, True],
+    "connectivity": [6, 18, 26],
+    "erode_core": [False],
+    "erosion_iterations": [1],
+}
 ```
 
-## Main notebook
+Total: 2,160 parameter combinations.
 
-```text
-notebooks/07_5Fold_CV_Boundary_Parameter_Selection_Clean_Colab_GitHub.ipynb
-```
-
-The notebook:
-
-1. Mounts Google Drive.
-2. Clones/pulls OpenPlaque from GitHub.
-3. Installs dependencies.
-4. Verifies `openplaque.cv_boundary_tuning` is present in the GitHub checkout.
-5. Extracts the nnU-Net model from Drive.
-6. Downloads or locates the labeled sample dataset.
-7. Collects paired `*_0000.nii.gz` images and matching label masks.
-8. Generates or reuses nnU-Net predictions.
-9. Runs 5-fold supervised parameter-selection cross-validation.
-10. Saves CSV/JSON/HTML reports to Drive.
-
-## Expected labeled sample data
-
-Old sample dataset layout:
-
-```text
-Sample_Dataset/
-  P02_LAD_axial_0000.nii.gz
-  P02_LAD_axial.nii.gz
-```
-
-or nnU-Net raw layout:
-
-```text
-Dataset001_CCTA_DHM/
-  imagesTr/*_0000.nii.gz
-  labelsTr/*.nii.gz
-```
+For a fast smoke test, the notebook also exposes `SMALL_GRID`.
 
 ## Outputs
 
+The notebook saves:
+
 ```text
-/content/drive/MyDrive/OpenPlaque/CV_Boundary_Tuning/
-  predictions/
-  cv_all_case_results.csv
-  cv_heldout_results.csv
-  cv_selected_by_fold.csv
-  cv_best_boundary_parameters.json
-  cv_report.html
+/content/drive/MyDrive/OpenPlaque/Boundary_Parameter_Tuning/nnunet_prediction_cache.zip
+/content/drive/MyDrive/OpenPlaque/Boundary_Parameter_Tuning/all_case_parameter_results.csv
+/content/drive/MyDrive/OpenPlaque/Boundary_Parameter_Tuning/parameter_summary.csv
+/content/drive/MyDrive/OpenPlaque/Boundary_Parameter_Tuning/best_boundary_parameters.json
+/content/drive/MyDrive/OpenPlaque/Boundary_Parameter_Tuning/boundary_parameter_tuning_report.html
 ```
 
-## Test
+Research use only. Not clinically validated.
 
-```bash
-PYTHONPATH=src pytest -q tests/test_cv_boundary_tuning.py
+
+## Prediction archive behavior
+
+The notebook now uses:
+
+```text
+/content/drive/MyDrive/OpenPlaque/Boundary_Parameter_Tuning/nnunet_prediction_cache.zip
 ```
 
-Research use only. Not clinically validated and not for clinical decision-making.
+Workflow:
+
+1. If local `predictions/` already contains all expected masks, reuse it.
+2. Else, if `nnunet_prediction_cache.zip` exists, restore predictions from it.
+3. Else, run `nnUNetv2_predict` once per sample case batch.
+4. After prediction generation, write/update the compressed archive in Google Drive.
+
+Set `OVERWRITE_PREDICTIONS = True` in the notebook only when intentionally regenerating predictions.

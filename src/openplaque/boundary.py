@@ -2,13 +2,7 @@
 OpenPlaque boundary refinement.
 
 Experimental post-processing for nnU-Net plaque masks.
-
-Goal:
-    Reduce false-positive plaque boundary voxels that may represent lumen,
-    normal vessel wall, interpolation artifacts, or isolated noise.
-
-Important:
-    This is research code only. It has not been clinically validated.
+Research use only. Not clinically validated.
 """
 
 from dataclasses import dataclass
@@ -68,11 +62,9 @@ class RefinementResult:
 
     def show_removed_overlay(self, volume, z=None, vmin=-200, vmax=800):
         import matplotlib.pyplot as plt
-
         if z is None:
             counts = np.sum(self.removed_mask, axis=(1, 2))
             z = int(np.argmax(counts))
-
         plt.figure(figsize=(8, 8))
         plt.imshow(volume[z], cmap="gray", vmin=vmin, vmax=vmax)
         plt.imshow(self.removed_mask[z], alpha=0.6)
@@ -82,11 +74,9 @@ class RefinementResult:
 
     def show_refined_overlay(self, volume, z=None, vmin=-200, vmax=800):
         import matplotlib.pyplot as plt
-
         if z is None:
             counts = np.sum(self.refined_mask == 2, axis=(1, 2))
             z = int(np.argmax(counts))
-
         plt.figure(figsize=(8, 8))
         plt.imshow(volume[z], cmap="gray", vmin=vmin, vmax=vmax)
         plt.imshow(self.refined_mask[z] == 2, alpha=0.6)
@@ -95,117 +85,119 @@ class RefinementResult:
         plt.show()
 
 
-def remove_small_components(mask, min_voxels=10, plaque_label=2):
-    """
-    Remove small disconnected plaque components.
+def _structure_for_connectivity(connectivity: int = 26):
+    if connectivity <= 6:
+        return ndi.generate_binary_structure(3, 1)
+    if connectivity <= 18:
+        return ndi.generate_binary_structure(3, 2)
+    return ndi.generate_binary_structure(3, 3)
 
-    This is useful for eliminating tiny speckles, but it does not address
-    lumen/wall boundary errors.
-    """
+
+def remove_small_components(mask, min_voxels=10, plaque_label=2, connectivity=26):
     plaque = mask == plaque_label
-    labels, n = ndi.label(plaque)
-
+    labels, _ = ndi.label(plaque, structure=_structure_for_connectivity(connectivity))
     sizes = np.bincount(labels.ravel())
     keep_labels = np.where(sizes >= min_voxels)[0]
     keep_labels = keep_labels[keep_labels != 0]
-
     keep = np.isin(labels, keep_labels)
-
     refined = mask.copy()
     refined[plaque & ~keep] = 0
-
     return refined
 
 
-def erode_plaque_boundary(mask, iterations=1, plaque_label=2):
-    """
-    Conservative core-plaque mask using binary erosion.
-
-    This estimates a high-confidence plaque core by removing boundary voxels.
-    It will underestimate volume but can help quantify boundary uncertainty.
-    """
+def erode_plaque_boundary(mask, iterations=1, plaque_label=2, connectivity=26):
     plaque = mask == plaque_label
-    core = ndi.binary_erosion(plaque, iterations=iterations)
-
+    core = ndi.binary_erosion(
+        plaque,
+        structure=_structure_for_connectivity(connectivity),
+        iterations=iterations,
+    )
     refined = mask.copy()
     refined[plaque & ~core] = 0
-
     return refined
 
 
-def lumen_adjacent_trim(mask,
-                        vessel_label=1,
-                        plaque_label=2,
-                        distance_voxels=1):
-    """
-    Remove plaque voxels immediately adjacent to the predicted vessel/lumen label.
-
-    Rationale:
-        If label 1 represents normal vessel/lumen region and label 2 plaque,
-        plaque voxels touching label 1 may be uncertain boundary voxels.
-    """
+def lumen_adjacent_trim(mask, vessel_label=1, plaque_label=2, distance_voxels=1, connectivity=26):
     plaque = mask == plaque_label
     vessel = mask == vessel_label
-
-    vessel_dilated = ndi.binary_dilation(vessel, iterations=distance_voxels)
+    vessel_dilated = ndi.binary_dilation(
+        vessel,
+        structure=_structure_for_connectivity(connectivity),
+        iterations=distance_voxels,
+    )
     remove = plaque & vessel_dilated
-
     refined = mask.copy()
     refined[remove] = 0
-
     return refined
 
 
-def intensity_trim(volume,
-                   mask,
-                   plaque_label=2,
-                   high_hu_threshold=None,
-                   low_hu_threshold=None):
-    """
-    Remove plaque voxels outside a configurable HU range.
-
-    Use cautiously:
-        On contrast-enhanced CCTA, high HU may be calcium OR contrast-filled lumen.
-        This function is provided for experiments, not clinical interpretation.
-    """
+def intensity_trim(volume, mask, plaque_label=2, high_hu_threshold=None, low_hu_threshold=None):
     plaque = mask == plaque_label
     remove = np.zeros_like(plaque, dtype=bool)
-
     if high_hu_threshold is not None:
         remove |= plaque & (volume > high_hu_threshold)
-
     if low_hu_threshold is not None:
         remove |= plaque & (volume < low_hu_threshold)
-
     refined = mask.copy()
     refined[remove] = 0
-
     return refined
 
 
-def refine_plaque_mask(volume,
-                       mask,
-                       spacing,
-                       remove_small=True,
-                       min_component_voxels=10,
-                       trim_lumen_adjacent=True,
-                       lumen_distance_voxels=1,
-                       erode_core=False,
-                       erosion_iterations=1,
-                       high_hu_threshold=None,
-                       low_hu_threshold=None):
+def close_plaque(mask, plaque_label=2, closing_radius_voxels=0, connectivity=26):
+    """Morphological closing of plaque label only; preserves other labels."""
+    if closing_radius_voxels <= 0:
+        return mask
+    plaque = mask == plaque_label
+    closed = ndi.binary_closing(
+        plaque,
+        structure=_structure_for_connectivity(connectivity),
+        iterations=int(closing_radius_voxels),
+    )
+    refined = mask.copy()
+    # Add closed voxels as plaque only where background currently exists, avoiding label-1 overwrite.
+    refined[(closed & ~plaque) & (refined == 0)] = plaque_label
+    return refined
+
+
+def fill_plaque_holes(mask, plaque_label=2):
+    """Fill enclosed holes inside plaque components; preserves other labels."""
+    plaque = mask == plaque_label
+    filled = ndi.binary_fill_holes(plaque)
+    refined = mask.copy()
+    refined[(filled & ~plaque) & (refined == 0)] = plaque_label
+    return refined
+
+
+def refine_plaque_mask(
+    volume,
+    mask,
+    spacing,
+    remove_small=True,
+    min_component_voxels=10,
+    trim_lumen_adjacent=True,
+    lumen_distance_voxels=1,
+    erode_core=False,
+    erosion_iterations=1,
+    high_hu_threshold=None,
+    low_hu_threshold=None,
+    closing_radius_voxels=0,
+    fill_holes=False,
+    connectivity=26,
+):
+    """Apply configurable experimental refinement steps.
+
+    Parameters searched by the tuning notebook include:
+    - min_component_voxels
+    - lumen_distance_voxels
+    - high_hu_threshold
+    - low_hu_threshold
+    - closing_radius_voxels
+    - fill_holes
+    - connectivity
+
+    erode_core/erosion_iterations are normally fixed for the main estimate and
+    used separately for conservative core/uncertainty estimates.
     """
-    Apply a configurable sequence of experimental refinement steps.
-
-    Recommended starting point:
-        remove_small=True
-        trim_lumen_adjacent=True
-        erode_core=False
-        high_hu_threshold=None
-
-    This returns a RefinementResult object and preserves non-plaque labels.
-    """
-
     original = mask.copy()
     refined = mask.copy()
 
@@ -218,38 +210,28 @@ def refine_plaque_mask(volume,
         "erosion_iterations": erosion_iterations,
         "high_hu_threshold": high_hu_threshold,
         "low_hu_threshold": low_hu_threshold,
+        "closing_radius_voxels": closing_radius_voxels,
+        "fill_holes": fill_holes,
+        "connectivity": connectivity,
     }
 
-    if remove_small:
-        refined = remove_small_components(
-            refined,
-            min_voxels=min_component_voxels,
-            plaque_label=2,
-        )
+    if closing_radius_voxels and int(closing_radius_voxels) > 0:
+        refined = close_plaque(refined, plaque_label=2, closing_radius_voxels=int(closing_radius_voxels), connectivity=int(connectivity))
 
-    if trim_lumen_adjacent:
-        refined = lumen_adjacent_trim(
-            refined,
-            vessel_label=1,
-            plaque_label=2,
-            distance_voxels=lumen_distance_voxels,
-        )
+    if fill_holes:
+        refined = fill_plaque_holes(refined, plaque_label=2)
+
+    if remove_small:
+        refined = remove_small_components(refined, min_voxels=min_component_voxels, plaque_label=2, connectivity=int(connectivity))
+
+    if trim_lumen_adjacent and int(lumen_distance_voxels) > 0:
+        refined = lumen_adjacent_trim(refined, vessel_label=1, plaque_label=2, distance_voxels=int(lumen_distance_voxels), connectivity=int(connectivity))
 
     if high_hu_threshold is not None or low_hu_threshold is not None:
-        refined = intensity_trim(
-            volume,
-            refined,
-            plaque_label=2,
-            high_hu_threshold=high_hu_threshold,
-            low_hu_threshold=low_hu_threshold,
-        )
+        refined = intensity_trim(volume, refined, plaque_label=2, high_hu_threshold=high_hu_threshold, low_hu_threshold=low_hu_threshold)
 
     if erode_core:
-        refined = erode_plaque_boundary(
-            refined,
-            iterations=erosion_iterations,
-            plaque_label=2,
-        )
+        refined = erode_plaque_boundary(refined, iterations=int(erosion_iterations), plaque_label=2, connectivity=int(connectivity))
 
     removed = (original == 2) & (refined != 2)
 
@@ -258,6 +240,6 @@ def refine_plaque_mask(volume,
         refined_mask=refined,
         removed_mask=removed,
         spacing=spacing,
-        method="remove_small + lumen_adjacent + optional_intensity + optional_erosion",
+        method="component_lumen_intensity_morphology_refinement",
         parameters=params,
     )
