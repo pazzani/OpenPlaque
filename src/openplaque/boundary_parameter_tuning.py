@@ -588,3 +588,239 @@ def ensure_prediction_cache_with_archive(
     print(f"Writing prediction archive: {archive_path}")
     archive_prediction_cache(pred_dir, archive_path, cases=cases)
     return pred_dir
+
+# -----------------------------------------------------------------------------
+# Bayesian / Optuna optimization over the same downstream boundary parameters.
+# -----------------------------------------------------------------------------
+
+BAYESIAN_SEARCH_SPACE = {
+    "min_component_voxels": {"type": "categorical", "choices": [1, 5, 10, 25, 50, 100]},
+    "lumen_distance_voxels": {"type": "int", "low": 0, "high": 3},
+    "high_hu_threshold": {"type": "categorical", "choices": [None, 650, 700, 850, 1000, 1200]},
+    "low_hu_threshold": {"type": "categorical", "choices": [None, -150, -100, -50, 0]},
+    "closing_radius_voxels": {"type": "int", "low": 0, "high": 2},
+    "fill_holes": {"type": "categorical", "choices": [False, True]},
+    "min_plaque_length_mm": {"type": "categorical", "choices": [0.0, 1.0, 2.0, 3.0, 5.0]},
+    "connectivity": {"type": "categorical", "choices": [6, 18, 26]},
+    "adaptive_hu_thresholds": {"type": "categorical", "choices": [False, True]},
+    "erode_core": {"type": "categorical", "choices": [False]},
+    "erosion_iterations": {"type": "categorical", "choices": [1]},
+}
+
+
+def sample_boundary_params_from_trial(trial, search_space: Optional[Mapping[str, Mapping[str, Any]]] = None) -> dict[str, Any]:
+    """Sample one boundary-parameter set from an Optuna trial."""
+    space = dict(BAYESIAN_SEARCH_SPACE if search_space is None else search_space)
+    params: dict[str, Any] = {}
+    for name, spec in space.items():
+        typ = spec.get("type", "categorical")
+        if typ == "categorical":
+            params[name] = trial.suggest_categorical(name, list(spec["choices"]))
+        elif typ == "int":
+            params[name] = trial.suggest_int(name, int(spec["low"]), int(spec["high"]), step=int(spec.get("step", 1)))
+        elif typ == "float":
+            params[name] = trial.suggest_float(name, float(spec["low"]), float(spec["high"]), step=spec.get("step"), log=bool(spec.get("log", False)))
+        else:
+            raise ValueError(f"Unknown search-space type for {name}: {typ}")
+
+    # Normalize for refine_plaque_mask.
+    params["min_component_voxels"] = int(params.get("min_component_voxels", 10))
+    params["lumen_distance_voxels"] = int(params.get("lumen_distance_voxels", 1))
+    params["closing_radius_voxels"] = int(params.get("closing_radius_voxels", 0))
+    params["fill_holes"] = bool(params.get("fill_holes", False))
+    params["min_plaque_length_mm"] = float(params.get("min_plaque_length_mm", 0.0))
+    params["connectivity"] = int(params.get("connectivity", 26))
+    params["adaptive_hu_thresholds"] = bool(params.get("adaptive_hu_thresholds", False))
+    params["erode_core"] = bool(params.get("erode_core", False))
+    params["erosion_iterations"] = int(params.get("erosion_iterations", 1))
+    return params
+
+
+def evaluate_case_params(case: SampleCase, pred_dir: str | Path, params: Mapping[str, Any]) -> dict[str, Any]:
+    """Evaluate one parameter set for one case using a cached nnU-Net prediction."""
+    img, vol = read_nifti(case.image_path)
+    _, label = read_nifti(case.label_path)
+    _, pred = read_nifti(prediction_path(pred_dir, case.case_id))
+    spacing = tuple(float(x) for x in img.GetSpacing())
+    ref = refine_plaque_mask(
+        volume=vol,
+        mask=pred,
+        spacing=spacing,
+        remove_small=int(params.get("min_component_voxels", 0)) > 0,
+        min_component_voxels=max(1, int(params.get("min_component_voxels", 10))),
+        trim_lumen_adjacent=int(params.get("lumen_distance_voxels", 0)) > 0,
+        lumen_distance_voxels=int(params.get("lumen_distance_voxels", 0)),
+        erode_core=bool(params.get("erode_core", False)),
+        erosion_iterations=int(params.get("erosion_iterations", 1)),
+        high_hu_threshold=params.get("high_hu_threshold"),
+        low_hu_threshold=params.get("low_hu_threshold"),
+        closing_radius_voxels=int(params.get("closing_radius_voxels", 0)),
+        fill_holes=bool(params.get("fill_holes", False)),
+        min_plaque_length_mm=float(params.get("min_plaque_length_mm", 0.0)),
+        connectivity=int(params.get("connectivity", 26)),
+        adaptive_hu_thresholds=bool(params.get("adaptive_hu_thresholds", False)),
+    )
+    m = mask_metrics(ref.refined_mask, label, spacing=spacing)
+    return {
+        "case_id": case.case_id,
+        **dict(params),
+        **m,
+        "score": score_metrics(m),
+        "raw_pred_tpv_mm3": ref.original_tpv_mm3,
+        "refined_tpv_mm3": ref.refined_tpv_mm3,
+        "removed_tpv_mm3": ref.removed_volume_mm3,
+    }
+
+
+def evaluate_params_all_cases(cases: Sequence[SampleCase], pred_dir: str | Path, params: Mapping[str, Any]) -> pd.DataFrame:
+    rows = [evaluate_case_params(c, pred_dir, params) for c in cases]
+    return pd.DataFrame(rows)
+
+
+def aggregate_single_params(rows: pd.DataFrame, params: Mapping[str, Any], trial_number: Optional[int] = None) -> dict[str, Any]:
+    if rows.empty:
+        raise ValueError("No rows to aggregate")
+    out = {**dict(params)}
+    if trial_number is not None:
+        out["trial_number"] = int(trial_number)
+    out.update({
+        "mean_score": float(rows["score"].mean()),
+        "std_score": float(rows["score"].std(ddof=0)),
+        "mean_dice": float(rows["dice"].mean()),
+        "mean_iou": float(rows["iou"].mean()),
+        "mean_precision": float(rows["precision"].mean()),
+        "mean_recall": float(rows["recall"].mean()),
+        "mean_abs_tpv_error_fraction": float(rows["abs_tpv_error_fraction"].mean()),
+        "mean_tpv_error_mm3": float(rows["tpv_error_mm3"].mean()),
+        "n_cases": int(rows["case_id"].nunique()),
+    })
+    return out
+
+
+def bayesian_optimize_boundary_parameters(
+    cases: Sequence[SampleCase],
+    pred_dir: str | Path,
+    n_trials: int = 250,
+    search_space: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    study_name: str = "openplaque_boundary_parameter_tuning",
+    storage: Optional[str] = None,
+    seed: int = 42,
+    timeout: Optional[int] = None,
+    show_progress_bar: bool = True,
+):
+    """Run Optuna Bayesian optimization on all labeled cases.
+
+    nnU-Net predictions must already be cached in ``pred_dir``. Each trial samples
+    one post-processing parameter set, applies it to every case, compares with the
+    expert label, and maximizes the mean supervised score.
+
+    Returns
+    -------
+    study, trial_case_results, trial_summary
+        ``trial_case_results`` has one row per trial/case. ``trial_summary`` has
+        one row per trial and is sorted by descending mean score.
+    """
+    try:
+        import optuna
+    except Exception as e:
+        raise ImportError("Optuna is required. Install with: pip install optuna") from e
+
+    sampler = optuna.samplers.TPESampler(seed=seed, multivariate=True, group=True)
+    study = optuna.create_study(
+        direction="maximize",
+        study_name=study_name,
+        storage=storage,
+        load_if_exists=True if storage else False,
+        sampler=sampler,
+    )
+
+    case_rows: list[pd.DataFrame] = []
+    summary_rows: list[dict[str, Any]] = []
+
+    def objective(trial):
+        params = sample_boundary_params_from_trial(trial, search_space=search_space)
+        rows = evaluate_params_all_cases(cases, pred_dir, params)
+        rows.insert(0, "trial_number", trial.number)
+        summary = aggregate_single_params(rows, params, trial_number=trial.number)
+        case_rows.append(rows)
+        summary_rows.append(summary)
+        # Attach useful metrics to the Optuna trial for notebook display.
+        for k in ["mean_dice", "mean_iou", "mean_abs_tpv_error_fraction", "mean_precision", "mean_recall"]:
+            trial.set_user_attr(k, summary[k])
+        return summary["mean_score"]
+
+    study.optimize(objective, n_trials=int(n_trials), timeout=timeout, show_progress_bar=show_progress_bar)
+
+    all_case_results = pd.concat(case_rows, ignore_index=True) if case_rows else pd.DataFrame()
+    trial_summary = pd.DataFrame(summary_rows)
+    if not trial_summary.empty:
+        trial_summary = trial_summary.sort_values(["mean_score", "mean_dice", "mean_abs_tpv_error_fraction"], ascending=[False, False, True]).reset_index(drop=True)
+        trial_summary.insert(0, "rank", np.arange(1, len(trial_summary)+1))
+    return study, all_case_results, trial_summary
+
+
+def params_from_trial_summary_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    cols = [c for c in PARAM_COLUMNS if c in row]
+    params = params_from_summary_row({c: row[c] for c in cols})
+    return params
+
+
+def select_best_bayesian_params(trial_summary: pd.DataFrame) -> dict[str, Any]:
+    if trial_summary.empty:
+        raise ValueError("trial_summary is empty")
+    return params_from_trial_summary_row(trial_summary.iloc[0])
+
+
+def save_bayesian_optimization_outputs(
+    trial_case_results: pd.DataFrame,
+    trial_summary: pd.DataFrame,
+    final_params: Mapping[str, Any],
+    output_dir: str | Path,
+) -> dict[str, Path]:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "trial_case_results": output_dir / "bayesian_trial_case_results.csv",
+        "trial_summary": output_dir / "bayesian_trial_summary.csv",
+        "best_json": output_dir / "best_boundary_parameters_bayesian.json",
+        "html": output_dir / "bayesian_boundary_parameter_tuning_report.html",
+    }
+    trial_case_results.to_csv(paths["trial_case_results"], index=False)
+    trial_summary.to_csv(paths["trial_summary"], index=False)
+    payload = {
+        "final_parameters_selected_on_all_cases": dict(final_params),
+        "best_mean_score": None if trial_summary.empty else float(trial_summary.iloc[0]["mean_score"]),
+        "best_mean_dice": None if trial_summary.empty else float(trial_summary.iloc[0]["mean_dice"]),
+        "best_mean_abs_tpv_error_fraction": None if trial_summary.empty else float(trial_summary.iloc[0]["mean_abs_tpv_error_fraction"]),
+        "optimizer": "Optuna TPESampler Bayesian/sequential model-based optimization",
+        "cross_validation": False,
+        "bootstrap": False,
+        "prediction_cache_note": "nnU-Net prediction is run once per case and cached; Bayesian optimization searches only downstream post-processing parameters.",
+        "scoring": "0.35*Dice + 0.20*IoU + 0.20*(1-min(abs TPV error fraction,1)) + 0.15*Precision + 0.10*Recall",
+        "research_use_only": True,
+    }
+    paths["best_json"].write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    write_bayesian_optimization_html(paths["html"], trial_summary, final_params)
+    return paths
+
+
+def write_bayesian_optimization_html(output_html: str | Path, trial_summary: pd.DataFrame, final_params: Mapping[str, Any]) -> Path:
+    output_html = Path(output_html)
+    output_html.parent.mkdir(parents=True, exist_ok=True)
+    top = trial_summary.head(75).copy()
+    for col in top.columns:
+        if str(col).startswith("mean_") or str(col).startswith("std_"):
+            top[col] = top[col].map(lambda x: "" if pd.isna(x) else f"{float(x):.4f}")
+    html = f"""<!doctype html><html><head><meta charset='utf-8'><title>OpenPlaque Bayesian Boundary Parameter Tuning</title>
+<style>body {{font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 32px; color:#222;}}
+table {{border-collapse: collapse; width:100%; margin: 16px 0 28px; font-size: 13px;}}
+th,td {{border:1px solid #ddd; padding:6px 8px; text-align:right;}} th:first-child,td:first-child {{text-align:left;}} th {{background:#f4f4f4;}}
+pre {{background:#f7f7f7; padding:12px; border-radius:8px; overflow-x:auto;}}
+.notice {{background:#fff3cd; border:1px solid #ffe08a; padding:12px 14px; border-radius:8px;}}</style></head><body>
+<h1>OpenPlaque Bayesian Boundary Parameter Tuning</h1>
+<p class='notice'><b>Research use only.</b> Uses labeled sample data for parameter selection. nnU-Net predictions are cached once per case. No cross-validation or bootstrap is used in this version.</p>
+<h2>Final parameters selected on all cases</h2><pre>{json.dumps(dict(final_params), indent=2)}</pre>
+<h2>Top Bayesian optimization trials</h2>{top.to_html(index=False, escape=False)}
+</body></html>"""
+    output_html.write_text(html, encoding="utf-8")
+    return output_html

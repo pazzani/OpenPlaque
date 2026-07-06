@@ -1,83 +1,72 @@
-# OpenPlaque Repository Additions: Supervised Boundary Parameter Tuning with Expanded Grid
+# OpenPlaque Repository Additions: Bayesian Boundary Parameter Tuning
 
-This release replaces 5-fold CV with full labeled-sample parameter evaluation.
+This repository-ready package adds an Optuna Bayesian-optimization workflow for OpenPlaque boundary-refinement parameters.
 
-## Why no cross-validation?
+## Main change
 
-Boundary refinement is deterministic post-processing after a fixed nnU-Net model. The efficient and appropriate workflow is:
+Instead of brute-forcing the full expanded grid, this version:
 
-1. Run nnU-Net once per labeled sample case.
-2. Cache the predictions locally.
-3. Save the predictions as a compressed ZIP archive on Google Drive.
-4. On later clean Colab runs, restore predictions from that archive and skip nnU-Net inference.
-5. Evaluate every boundary-refinement parameter set on all cached predictions.
-4. Compare each refined mask against the expert label.
-5. Select the parameter set with the best average supervised metrics.
+1. runs nnU-Net **once per labeled sample case**,
+2. saves predictions to a reusable compressed Google Drive archive,
+3. restores predictions from that archive in later clean Colab runs,
+4. uses Optuna TPESampler Bayesian/sequential optimization to search downstream boundary-refinement parameters,
+5. evaluates each trial on **all labeled sample cases**.
 
-No bootstrap is included.
+No cross-validation and no bootstrap are used in this version.
 
-## Files
+## Notebook
+
+```text
+notebooks/09_Bayesian_Boundary_Parameter_Tuning_CachedPredictions_GitHub.ipynb
+```
+
+The notebook clones/pulls OpenPlaque from GitHub and expects these additions to be committed to the repository.
+
+## Source additions
 
 ```text
 src/openplaque/boundary.py
 src/openplaque/boundary_parameter_tuning.py
-notebooks/08_Boundary_Parameter_Tuning_CachedPredictions_GitHub.ipynb
-docs/boundary_parameter_tuning_cached_predictions.md
-tests/test_boundary_parameter_tuning.py
 ```
 
-## Parameter grid
+## Parameters optimized
 
-Default grid:
+Bayesian search space:
 
-```python
-{
-    "min_component_voxels": [1, 5, 10, 25, 50],
-    "lumen_distance_voxels": [0, 1, 2],
-    "high_hu_threshold": [None, 700, 850, 1000],
-    "low_hu_threshold": [None, -100, -50],
-    "closing_radius_voxels": [0, 1, 2],
-    "fill_holes": [False, True],
-    "min_plaque_length_mm": [0, 1, 2, 3],
-    "connectivity": [6, 18, 26],
-    "adaptive_hu_thresholds": [False, True],
-    "erode_core": [False],
-    "erosion_iterations": [1],
-}
-```
-
-Total: 25,920 parameter combinations.
-
-For a fast smoke test, the notebook also exposes `SMALL_GRID`.
+- `min_component_voxels`: `[1, 5, 10, 25, 50, 100]`
+- `lumen_distance_voxels`: integer `0..3`
+- `high_hu_threshold`: `[None, 650, 700, 850, 1000, 1200]`
+- `low_hu_threshold`: `[None, -150, -100, -50, 0]`
+- `closing_radius_voxels`: integer `0..2`
+- `fill_holes`: `[False, True]`
+- `min_plaque_length_mm`: `[0, 1, 2, 3, 5]`
+- `connectivity`: `[6, 18, 26]`
+- `adaptive_hu_thresholds`: `[False, True]`
+- `erode_core`: fixed `False`
+- `erosion_iterations`: fixed `1`
 
 ## Outputs
 
-The notebook saves:
+Saved to Google Drive under:
 
 ```text
-/content/drive/MyDrive/OpenPlaque/Boundary_Parameter_Tuning/nnunet_prediction_cache.zip
-/content/drive/MyDrive/OpenPlaque/Boundary_Parameter_Tuning/all_case_parameter_results.csv
-/content/drive/MyDrive/OpenPlaque/Boundary_Parameter_Tuning/parameter_summary.csv
-/content/drive/MyDrive/OpenPlaque/Boundary_Parameter_Tuning/best_boundary_parameters.json
-/content/drive/MyDrive/OpenPlaque/Boundary_Parameter_Tuning/boundary_parameter_tuning_report.html
+/content/drive/MyDrive/OpenPlaque/Boundary_Parameter_Tuning_Bayesian/
+```
+
+Includes:
+
+- `nnunet_prediction_cache.zip`
+- `bayesian_trial_case_results.csv`
+- `bayesian_trial_summary.csv`
+- `best_boundary_parameters_bayesian.json`
+- `bayesian_boundary_parameter_tuning_report.html`
+
+## Scoring
+
+The supervised score is:
+
+```text
+0.35*Dice + 0.20*IoU + 0.20*(1 - min(abs TPV error fraction, 1)) + 0.15*Precision + 0.10*Recall
 ```
 
 Research use only. Not clinically validated.
-
-
-## Prediction archive behavior
-
-The notebook now uses:
-
-```text
-/content/drive/MyDrive/OpenPlaque/Boundary_Parameter_Tuning/nnunet_prediction_cache.zip
-```
-
-Workflow:
-
-1. If local `predictions/` already contains all expected masks, reuse it.
-2. Else, if `nnunet_prediction_cache.zip` exists, restore predictions from it.
-3. Else, run `nnUNetv2_predict` once per sample case batch.
-4. After prediction generation, write/update the compressed archive in Google Drive.
-
-Set `OVERWRITE_PREDICTIONS = True` in the notebook only when intentionally regenerating predictions.
