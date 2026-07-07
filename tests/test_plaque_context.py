@@ -6,9 +6,11 @@ from openplaque.plaque_context import (
     compute_hu_histogram,
     compute_plaque_context,
     dilate_plaque_mask,
+    plaque_context_candidate_mask,
     plaque_shell_mask,
     save_context_csv,
     summarize_hu_bins,
+    vessel_context_mask,
     write_context_html_report,
 )
 
@@ -65,6 +67,49 @@ def test_compute_plaque_context_detects_noncalcified_shell():
     assert shell_row["region"] == "shell_1vox"
     assert shell_row["hu_30_130_voxels"] == 6
     assert shell_row["noncalcified_context_fraction"] == 1.0
+
+
+def test_anatomical_include_mask_limits_shell():
+    volume = np.zeros((5, 5, 5), dtype=float)
+    mask = np.zeros((5, 5, 5), dtype=np.uint8)
+    mask[2, 2, 2] = 2
+    include = np.zeros_like(mask, dtype=bool)
+    include[2, 2, 1] = True
+    include[2, 2, 3] = True
+    volume[include] = 80
+
+    rows = compute_plaque_context("LAD", volume, mask, radii_voxels=(1,), connectivity=6, include_mask=include)
+
+    assert rows[1]["region"] == "shell_1vox"
+    assert rows[1]["voxel_count"] == 2
+    assert rows[1]["hu_30_130_voxels"] == 2
+
+
+def test_vessel_context_and_candidate_mask_filter_anatomy_and_hu():
+    volume = np.zeros((5, 5, 5), dtype=float)
+    mask = np.zeros((5, 5, 5), dtype=np.uint8)
+    mask[2, 2, 2] = 2
+    mask[2, 2, 1] = 1
+    mask[2, 2, 3] = 1
+    volume[2, 2, 1] = 80
+    volume[2, 2, 3] = 250
+    volume[2, 1, 2] = 700
+
+    include = vessel_context_mask(mask, vessel_dilation_voxels=0)
+    candidate = plaque_context_candidate_mask(
+        volume,
+        mask,
+        radius_voxels=1,
+        connectivity=6,
+        include_mask=include,
+        min_hu=30,
+        max_hu=350,
+    )
+
+    assert int(candidate.sum()) == 2
+    assert candidate[2, 2, 1]
+    assert candidate[2, 2, 3]
+    assert not candidate[2, 1, 2]
 
 
 def test_context_csv_and_html_exports(tmp_path):

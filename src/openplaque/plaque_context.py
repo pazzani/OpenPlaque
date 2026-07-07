@@ -94,14 +94,71 @@ def plaque_shell_mask(
     radius_voxels: int = 1,
     label: int = 2,
     connectivity: int = 26,
+    include_mask: Optional[np.ndarray] = None,
     exclude_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Return voxels within a dilation radius but outside the plaque mask."""
     plaque = _as_bool_mask(plaque_mask, label=label)
     shell = dilate_plaque_mask(plaque, radius_voxels, label=label, connectivity=connectivity) & ~plaque
+    if include_mask is not None:
+        shell &= np.asarray(include_mask, dtype=bool)
     if exclude_mask is not None:
         shell &= ~np.asarray(exclude_mask, dtype=bool)
     return shell
+
+
+def vessel_context_mask(
+    segmentation_mask: np.ndarray,
+    vessel_label: int = 1,
+    plaque_label: int = 2,
+    vessel_dilation_voxels: int = 1,
+    connectivity: int = 26,
+) -> np.ndarray:
+    """Return an anatomical search region around segmented vessel/plaque labels.
+
+    The nnU-Net masks used by OpenPlaque conventionally label lumen/vessel as
+    1 and plaque as 2. Dilating their union creates a conservative local search
+    band that excludes far-field background from geometric plaque shells.
+    """
+    mask = np.asarray(segmentation_mask)
+    vessel = (mask == vessel_label) | (mask == plaque_label)
+    if vessel_dilation_voxels <= 0:
+        return vessel
+    return dilate_plaque_mask(vessel, radius_voxels=vessel_dilation_voxels, label=plaque_label, connectivity=connectivity)
+
+
+def plaque_context_candidate_mask(
+    volume: np.ndarray,
+    plaque_mask: np.ndarray,
+    radius_voxels: int = 3,
+    label: int = 2,
+    connectivity: int = 26,
+    include_mask: Optional[np.ndarray] = None,
+    exclude_mask: Optional[np.ndarray] = None,
+    min_hu: Optional[float] = 30.0,
+    max_hu: Optional[float] = 350.0,
+) -> np.ndarray:
+    """Return shell voxels that pass anatomy and HU filters.
+
+    Defaults target noncalcified/mixed plaque-like context (30 to <350 HU)
+    around a calcified core while excluding the original plaque mask.
+    """
+    volume = np.asarray(volume)
+    candidate = plaque_shell_mask(
+        plaque_mask,
+        radius_voxels=radius_voxels,
+        label=label,
+        connectivity=connectivity,
+        include_mask=include_mask,
+        exclude_mask=exclude_mask,
+    )
+    if volume.shape != candidate.shape:
+        raise ValueError("volume and plaque_mask must have the same shape.")
+    if min_hu is not None:
+        candidate &= volume >= float(min_hu)
+    if max_hu is not None:
+        candidate &= volume < float(max_hu)
+    return candidate
 
 
 def compute_hu_histogram(
@@ -125,6 +182,7 @@ def shell_hu_values(
     radius_voxels: int,
     label: int = 2,
     connectivity: int = 26,
+    include_mask: Optional[np.ndarray] = None,
     exclude_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Return HU values in the shell around the plaque mask."""
@@ -134,6 +192,7 @@ def shell_hu_values(
         radius_voxels=radius_voxels,
         label=label,
         connectivity=connectivity,
+        include_mask=include_mask,
         exclude_mask=exclude_mask,
     )
     if volume.shape != shell.shape:
@@ -209,7 +268,11 @@ def compute_plaque_context(
     radii_voxels: Sequence[int] = (1, 2, 3),
     label: int = 2,
     connectivity: int = 26,
+    include_mask: Optional[np.ndarray] = None,
     exclude_mask: Optional[np.ndarray] = None,
+    candidate_min_hu: Optional[float] = 30.0,
+    candidate_max_hu: Optional[float] = 350.0,
+    include_candidate_rows: bool = False,
 ) -> list[dict[str, Any]]:
     """Summarize HU inside plaque and in surrounding dilation shells."""
     volume = np.asarray(volume)
@@ -224,9 +287,23 @@ def compute_plaque_context(
             radius_voxels=int(radius),
             label=label,
             connectivity=connectivity,
+            include_mask=include_mask,
             exclude_mask=exclude_mask,
         )
         rows.append(summarize_hu_distribution(vessel, f"shell_{int(radius)}vox", volume[shell], radius_voxels=int(radius)))
+        if include_candidate_rows:
+            candidate = plaque_context_candidate_mask(
+                volume,
+                plaque,
+                radius_voxels=int(radius),
+                label=label,
+                connectivity=connectivity,
+                include_mask=include_mask,
+                exclude_mask=exclude_mask,
+                min_hu=candidate_min_hu,
+                max_hu=candidate_max_hu,
+            )
+            rows.append(summarize_hu_distribution(vessel, f"context_candidate_{int(radius)}vox", volume[candidate], radius_voxels=int(radius)))
     return rows
 
 
@@ -235,12 +312,27 @@ def compute_reports_plaque_context(
     masks: Optional[Mapping[str, np.ndarray]] = None,
     radii_voxels: Sequence[int] = (1, 2, 3),
     label: int = 2,
+    vessel_label: int = 1,
     connectivity: int = 26,
+    anatomical_filter: bool = False,
+    vessel_dilation_voxels: int = 1,
+    candidate_min_hu: Optional[float] = 30.0,
+    candidate_max_hu: Optional[float] = 350.0,
+    include_candidate_rows: bool = False,
 ) -> list[dict[str, Any]]:
     """Compute plaque-context rows for OpenPlaque SegmentationReport objects."""
     rows: list[dict[str, Any]] = []
     for report in reports:
         mask = report.mask if masks is None else masks[report.name]
+        include_mask = None
+        if anatomical_filter:
+            include_mask = vessel_context_mask(
+                mask,
+                vessel_label=vessel_label,
+                plaque_label=label,
+                vessel_dilation_voxels=vessel_dilation_voxels,
+                connectivity=connectivity,
+            )
         rows.extend(
             compute_plaque_context(
                 vessel=report.name,
@@ -249,6 +341,10 @@ def compute_reports_plaque_context(
                 radii_voxels=radii_voxels,
                 label=label,
                 connectivity=connectivity,
+                include_mask=include_mask,
+                candidate_min_hu=candidate_min_hu,
+                candidate_max_hu=candidate_max_hu,
+                include_candidate_rows=include_candidate_rows,
             )
         )
     return rows
@@ -274,6 +370,7 @@ def save_hu_histogram_png(
     radii_voxels: Sequence[int] = (1, 2, 3),
     label: int = 2,
     connectivity: int = 26,
+    include_mask: Optional[np.ndarray] = None,
     bins: Sequence[float] = DEFAULT_HISTOGRAM_BINS,
 ) -> Path:
     """Save overlaid HU histograms for plaque and surrounding shells."""
@@ -284,7 +381,7 @@ def save_hu_histogram_png(
     plaque = _as_bool_mask(plaque_mask, label=label)
     series = [("plaque", np.asarray(volume)[plaque].astype(float))]
     for radius in radii_voxels:
-        series.append((f"shell {int(radius)} vox", shell_hu_values(volume, plaque, int(radius), label=label, connectivity=connectivity)))
+        series.append((f"shell {int(radius)} vox", shell_hu_values(volume, plaque, int(radius), label=label, connectivity=connectivity, include_mask=include_mask)))
 
     plt.figure(figsize=(8, 5))
     for name, values in series:
@@ -310,6 +407,9 @@ def save_context_overlay_png(
     radius_voxels: int = 3,
     label: int = 2,
     connectivity: int = 26,
+    include_mask: Optional[np.ndarray] = None,
+    candidate_min_hu: Optional[float] = None,
+    candidate_max_hu: Optional[float] = None,
     z: Optional[int] = None,
     vmin: float = -200,
     vmax: float = 800,
@@ -320,7 +420,11 @@ def save_context_overlay_png(
 
     volume = np.asarray(volume)
     plaque = _as_bool_mask(plaque_mask, label=label)
-    shell = plaque_shell_mask(plaque, radius_voxels=radius_voxels, label=label, connectivity=connectivity)
+    shell = plaque_shell_mask(plaque, radius_voxels=radius_voxels, label=label, connectivity=connectivity, include_mask=include_mask)
+    if candidate_min_hu is not None:
+        shell &= volume >= float(candidate_min_hu)
+    if candidate_max_hu is not None:
+        shell &= volume < float(candidate_max_hu)
     output_png = Path(output_png)
     output_png.parent.mkdir(parents=True, exist_ok=True)
     if z is None:

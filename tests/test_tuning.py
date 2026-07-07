@@ -21,6 +21,6 @@ def test_tuning_smoke():
         'erode_core': [False],
         'erosion_iterations': [1],
     })
-    assert res.rows
-    assert 'LAD' in res.best_by_vessel
-    assert 'min_component_voxels' in res.selected_params
+    assert not res.empty
+    assert 'LAD' in set(res['vessel'])
+    assert 'min_component_voxels' in res.columns

@@ -60,8 +60,8 @@ def test_parameter_tuning_end_to_end_with_cached_prediction():
             'erode_core': [False],
             'erosion_iterations': [1],
         }
-        assert parameter_grid_size(grid) == 2
-        assert len(parameter_grid_dataframe(grid)) == 2
+        assert parameter_grid_size(grid) == 8
+        assert len(parameter_grid_dataframe(grid)) == 8
         rows = evaluate_all_cases(cases, pred_dir, grid)
         summary = aggregate_by_params(rows)
         params = select_best_params(rows)
