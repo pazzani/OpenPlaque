@@ -161,6 +161,47 @@ def plaque_context_candidate_mask(
     return candidate
 
 
+def vessel_wide_candidate_mask(
+    volume: np.ndarray,
+    segmentation_mask: np.ndarray,
+    vessel_label: int = 1,
+    plaque_label: int = 2,
+    vessel_dilation_voxels: int = 1,
+    connectivity: int = 26,
+    min_hu: Optional[float] = 30.0,
+    max_hu: Optional[float] = 350.0,
+    exclude_existing_plaque: bool = True,
+    exclude_vessel_label: bool = True,
+) -> np.ndarray:
+    """Return noncalcified/mixed candidates across the local vessel region.
+
+    Unlike ``plaque_context_candidate_mask``, this search is not anchored to an
+    existing calcified plaque core. It scans the anatomy-constrained vessel band
+    for lower-HU plaque-like tissue, optionally excluding the vessel/lumen label
+    and the existing nnU-Net plaque label.
+    """
+    volume = np.asarray(volume)
+    mask = np.asarray(segmentation_mask)
+    candidate = vessel_context_mask(
+        mask,
+        vessel_label=vessel_label,
+        plaque_label=plaque_label,
+        vessel_dilation_voxels=vessel_dilation_voxels,
+        connectivity=connectivity,
+    )
+    if volume.shape != candidate.shape:
+        raise ValueError("volume and segmentation_mask must have the same shape.")
+    if exclude_existing_plaque:
+        candidate &= mask != plaque_label
+    if exclude_vessel_label:
+        candidate &= mask != vessel_label
+    if min_hu is not None:
+        candidate &= volume >= float(min_hu)
+    if max_hu is not None:
+        candidate &= volume < float(max_hu)
+    return candidate
+
+
 def compute_hu_histogram(
     volume: np.ndarray,
     mask: np.ndarray,
@@ -319,6 +360,8 @@ def compute_reports_plaque_context(
     candidate_min_hu: Optional[float] = 30.0,
     candidate_max_hu: Optional[float] = 350.0,
     include_candidate_rows: bool = False,
+    include_vessel_candidate_rows: bool = False,
+    exclude_vessel_label_for_candidates: bool = True,
 ) -> list[dict[str, Any]]:
     """Compute plaque-context rows for OpenPlaque SegmentationReport objects."""
     rows: list[dict[str, Any]] = []
@@ -347,6 +390,20 @@ def compute_reports_plaque_context(
                 include_candidate_rows=include_candidate_rows,
             )
         )
+        if include_vessel_candidate_rows:
+            vessel_candidate = vessel_wide_candidate_mask(
+                report.volume,
+                mask,
+                vessel_label=vessel_label,
+                plaque_label=label,
+                vessel_dilation_voxels=vessel_dilation_voxels,
+                connectivity=connectivity,
+                min_hu=candidate_min_hu,
+                max_hu=candidate_max_hu,
+                exclude_existing_plaque=True,
+                exclude_vessel_label=exclude_vessel_label_for_candidates,
+            )
+            rows.append(summarize_hu_distribution(report.name, "vessel_candidate", report.volume[vessel_candidate], radius_voxels=-1))
     return rows
 
 
@@ -445,6 +502,75 @@ def save_context_overlay_png(
     plt.savefig(output_png, dpi=150)
     plt.close()
     return output_png
+
+
+def save_vessel_candidate_overlay_png(
+    volume: np.ndarray,
+    segmentation_mask: np.ndarray,
+    output_png: str | Path,
+    title: str,
+    vessel_label: int = 1,
+    plaque_label: int = 2,
+    vessel_dilation_voxels: int = 1,
+    connectivity: int = 26,
+    min_hu: Optional[float] = 30.0,
+    max_hu: Optional[float] = 350.0,
+    exclude_vessel_label: bool = True,
+    z: Optional[int] = None,
+    vmin: float = -200,
+    vmax: float = 800,
+) -> Path:
+    """Save overlay of calcified core and vessel-wide lower-HU candidates."""
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import ListedColormap
+
+    volume = np.asarray(volume)
+    mask = np.asarray(segmentation_mask)
+    plaque = _as_bool_mask(mask, label=plaque_label)
+    candidate = vessel_wide_candidate_mask(
+        volume,
+        mask,
+        vessel_label=vessel_label,
+        plaque_label=plaque_label,
+        vessel_dilation_voxels=vessel_dilation_voxels,
+        connectivity=connectivity,
+        min_hu=min_hu,
+        max_hu=max_hu,
+        exclude_existing_plaque=True,
+        exclude_vessel_label=exclude_vessel_label,
+    )
+    output_png = Path(output_png)
+    output_png.parent.mkdir(parents=True, exist_ok=True)
+    if z is None:
+        counts = np.sum(plaque | candidate, axis=(1, 2))
+        z = int(np.argmax(counts)) if counts.size else 0
+
+    overlay = np.zeros(volume.shape, dtype=np.uint8)
+    overlay[candidate] = 1
+    overlay[plaque] = 2
+    masked = np.ma.masked_where(overlay[z] == 0, overlay[z])
+    cmap = ListedColormap(["lime", "red"])
+    plt.figure(figsize=(7, 7))
+    plt.imshow(volume[z], cmap="gray", vmin=vmin, vmax=vmax)
+    plt.imshow(masked, cmap=cmap, vmin=1, vmax=2, alpha=0.55)
+    plt.title(f"{title} - slice {z}")
+    plt.axis("off")
+    plt.tight_layout()
+    plt.savefig(output_png, dpi=150)
+    plt.close()
+    return output_png
+
+
+def save_candidate_mask_nifti(candidate_mask: np.ndarray, reference_image: Any, path: str | Path) -> Path:
+    """Save a boolean candidate mask as a NIfTI using a reference image."""
+    import SimpleITK as sitk
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img = sitk.GetImageFromArray(np.asarray(candidate_mask, dtype=np.uint8))
+    img.CopyInformation(reference_image)
+    sitk.WriteImage(img, str(path))
+    return path
 
 
 def write_context_html_report(

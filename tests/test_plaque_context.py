@@ -11,6 +11,7 @@ from openplaque.plaque_context import (
     save_context_csv,
     summarize_hu_bins,
     vessel_context_mask,
+    vessel_wide_candidate_mask,
     write_context_html_report,
 )
 
@@ -110,6 +111,32 @@ def test_vessel_context_and_candidate_mask_filter_anatomy_and_hu():
     assert candidate[2, 2, 1]
     assert candidate[2, 2, 3]
     assert not candidate[2, 1, 2]
+
+
+def test_vessel_wide_candidate_finds_nonadjacent_lower_hu_tissue():
+    volume = np.zeros((7, 7, 7), dtype=float)
+    mask = np.zeros((7, 7, 7), dtype=np.uint8)
+    mask[3, 3, 3] = 2
+    mask[3, 3, 2] = 1
+    volume[3, 3, 3] = 900
+    volume[3, 3, 2] = 80
+    volume[1, 1, 1] = 120
+    volume[3, 4, 3] = 180
+
+    candidate = vessel_wide_candidate_mask(
+        volume,
+        mask,
+        vessel_dilation_voxels=1,
+        connectivity=6,
+        min_hu=30,
+        max_hu=350,
+        exclude_vessel_label=True,
+    )
+
+    assert candidate[3, 4, 3]
+    assert not candidate[3, 3, 2]
+    assert not candidate[3, 3, 3]
+    assert not candidate[1, 1, 1]
 
 
 def test_context_csv_and_html_exports(tmp_path):
