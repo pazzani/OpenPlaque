@@ -42,12 +42,8 @@ def test_outer_wall_candidate_preserves_seed_and_rejects_fat():
     volume = np.full((7, 7, 7), -100.0, dtype=float)
     mask = np.zeros((7, 7, 7), dtype=np.uint8)
 
-    # Lumen seed plus one plaque voxel.
     mask[3, 3, 3] = 1
     mask[3, 3, 4] = 2
-
-    # Tissue-valued voxels near the artery should be eligible to enter the
-    # candidate envelope; surrounding fat should not.
     volume[2:5, 2:5, 2:6] = 50.0
 
     outer = estimate_outer_wall_candidate(
@@ -64,6 +60,60 @@ def test_outer_wall_candidate_preserves_seed_and_rejects_fat():
     assert np.all(outer[seed])
     assert outer[3, 2, 3]
     assert not outer[0, 0, 0]
+
+
+def test_reference_mask_stops_proxy_only_outer_wall_halo():
+    volume = np.full((5, 9, 9), 50.0, dtype=float)
+    reference = np.zeros((5, 9, 9), dtype=np.uint8)
+    reference[2, 2, 2] = 1
+
+    augmented = reference.copy()
+    augmented[2, 6, 6] = 2  # disconnected proxy-only seed island
+
+    outer = estimate_outer_wall_candidate(
+        volume,
+        augmented,
+        spacing=(1.0, 1.0, 1.0),
+        max_wall_thickness_mm=1.5,
+        closing_iterations=0,
+        fill_holes=False,
+        reference_mask=reference,
+    )
+
+    # The proxy seed itself is retained so PAV containment remains valid, but it
+    # cannot generate an expanded yellow halo away from the original artery.
+    assert outer[2, 6, 6]
+    assert not outer[2, 6, 5]
+    assert outer[2, 2, 3]
+
+
+def test_slice_anchor_filter_removes_neighbor_slice_growth_without_anchor():
+    volume = np.full((5, 5, 5), 50.0, dtype=float)
+    mask = np.zeros((5, 5, 5), dtype=np.uint8)
+    mask[2, 2, 2] = 1
+
+    filtered = estimate_outer_wall_candidate(
+        volume,
+        mask,
+        spacing=(1.0, 1.0, 1.0),
+        max_wall_thickness_mm=1.1,
+        closing_iterations=0,
+        fill_holes=False,
+        slice_anchor_filter=True,
+    )
+    unfiltered = estimate_outer_wall_candidate(
+        volume,
+        mask,
+        spacing=(1.0, 1.0, 1.0),
+        max_wall_thickness_mm=1.1,
+        closing_iterations=0,
+        fill_holes=False,
+        slice_anchor_filter=False,
+    )
+
+    assert filtered[2, 2, 3]
+    assert not filtered[1, 2, 2]
+    assert unfiltered[1, 2, 2]
 
 
 def test_estimate_pav_from_labels_zero_plaque():
