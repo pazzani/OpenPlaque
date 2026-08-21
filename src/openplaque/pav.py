@@ -14,6 +14,8 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import ndimage as ndi
 
+from .pav_anchor import constrained_growth_support, keep_slice_growth_touching_anchor
+
 
 @dataclass
 class PAVResult:
@@ -75,21 +77,15 @@ def estimate_outer_wall_candidate(
     closing_iterations=1,
     fill_holes=True,
     connectivity=26,
+    reference_mask=None,
+    slice_anchor_filter=True,
 ):
     """Estimate a candidate outer-vessel envelope around the current artery mask.
 
-    Method
-    ------
-    1. Use vessel/lumen + plaque labels as an anatomical seed.
-    2. Expand by a physical distance (mm), not a fixed voxel count.
-    3. Reject newly added voxels with attenuation below ``fat_threshold_hu``.
-       Seed voxels are never removed, so low-attenuation plaque already identified
-       by the plaque model is preserved.
-    4. Keep only connected regions touching the seed and optionally close/fill them.
-
-    This is deliberately conservative and transparent.  It is meant to generate a
-    contour for visual review and later refinement, not to stand in for a validated
-    EEM/outer-wall segmentation model.
+    ``reference_mask`` should be the original nnU-Net artery mask when ``mask`` has
+    been augmented with the broader TPV plaque proxy. New outer-wall growth is then
+    constrained to stay close to both the augmented seed and the original artery.
+    Seed voxels themselves are always preserved.
     """
     volume = np.asarray(volume)
     mask = np.asarray(mask)
@@ -104,13 +100,25 @@ def estimate_outer_wall_candidate(
     if not np.any(seed):
         return np.zeros_like(seed, dtype=bool)
 
-    distance_mm = ndi.distance_transform_edt(~seed, sampling=_spacing_zyx(spacing))
-    within_distance = distance_mm <= float(max_wall_thickness_mm)
+    if reference_mask is None:
+        anchor = seed.copy()
+    else:
+        reference_mask = np.asarray(reference_mask)
+        if reference_mask.shape != mask.shape:
+            raise ValueError("reference_mask and mask must have the same shape")
+        anchor = (reference_mask == vessel_label) | (reference_mask == plaque_label)
+        if not np.any(anchor):
+            raise ValueError("reference_mask has no vessel/plaque anchor voxels")
 
-    # Preserve the existing segmentation exactly; HU filtering only applies to
-    # newly proposed outer-wall voxels.
     tissue_candidate = volume >= float(fat_threshold_hu)
-    candidate = seed | (within_distance & tissue_candidate)
+    allowed_growth = constrained_growth_support(
+        seed,
+        anchor,
+        spacing_zyx=_spacing_zyx(spacing),
+        max_distance_mm=max_wall_thickness_mm,
+        tissue_mask=tissue_candidate,
+    )
+    candidate = seed | allowed_growth
     candidate = _keep_components_touching_seed(candidate, seed, connectivity=connectivity)
 
     if closing_iterations and int(closing_iterations) > 0:
@@ -122,12 +130,17 @@ def estimate_outer_wall_candidate(
         ) | seed
 
     if fill_holes:
-        # Fill holes slice-by-slice rather than globally; coronary cross-sections
-        # are locally tubular and this is less likely to bridge distant anatomy.
         filled = np.zeros_like(candidate, dtype=bool)
         for z in range(candidate.shape[0]):
             filled[z] = ndi.binary_fill_holes(candidate[z])
         candidate = filled | seed
+
+    # Re-apply the support after morphology so closing/filling cannot bridge into
+    # unrelated adjacent structures. Keep the seed intact to preserve plaque.
+    candidate = seed | (candidate & allowed_growth)
+
+    if slice_anchor_filter:
+        candidate = keep_slice_growth_touching_anchor(candidate, seed, anchor)
 
     return candidate.astype(bool)
 
@@ -161,6 +174,8 @@ def estimate_pav_from_labels(
     closing_iterations=1,
     fill_holes=True,
     connectivity=26,
+    reference_mask=None,
+    slice_anchor_filter=True,
 ):
     """Estimate a candidate outer wall and compute experimental PAV."""
     outer = estimate_outer_wall_candidate(
@@ -174,6 +189,8 @@ def estimate_pav_from_labels(
         closing_iterations=closing_iterations,
         fill_holes=fill_holes,
         connectivity=connectivity,
+        reference_mask=reference_mask,
+        slice_anchor_filter=slice_anchor_filter,
     )
     plaque = np.asarray(mask) == plaque_label
     plaque_volume, outer_volume, pav, plaque_voxels, outer_voxels = compute_pav(
@@ -188,6 +205,8 @@ def estimate_pav_from_labels(
         closing_iterations=closing_iterations,
         fill_holes=fill_holes,
         connectivity=connectivity,
+        reference_mask_supplied=reference_mask is not None,
+        slice_anchor_filter=slice_anchor_filter,
     )
 
     return PAVResult(
