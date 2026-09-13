@@ -44,12 +44,26 @@ def robust01(a, mask=None, lo_q=2, hi_q=98):
     return np.clip((a - lo) / (hi - lo), 0, 1)
 
 
-def _neighbors8(p):
+def _graph_neighbors(coord_set, p):
+    """8-connected skeleton graph without diagonal corner-shortcut edges.
+
+    A diagonal edge is kept only when neither orthogonal bridge pixel is
+    present. This preserves true diagonal lines but avoids turning an ordinary
+    90-degree skeleton corner into a spurious graph cycle.
+    """
     y, x = p
-    for dy in (-1, 0, 1):
-        for dx in (-1, 0, 1):
-            if dy or dx:
-                yield (y + dy, x + dx)
+    for dy, dx in ((-1,0),(1,0),(0,-1),(0,1)):
+        q = (y + dy, x + dx)
+        if q in coord_set:
+            yield q
+    for dy, dx in ((-1,-1),(-1,1),(1,-1),(1,1)):
+        q = (y + dy, x + dx)
+        if q not in coord_set:
+            continue
+        bridge1 = (y + dy, x)
+        bridge2 = (y, x + dx)
+        if bridge1 not in coord_set and bridge2 not in coord_set:
+            yield q
 
 
 def _component_graph_stats(component):
@@ -60,7 +74,7 @@ def _component_graph_stats(component):
     degrees = []
     edges2 = 0
     for p in coords:
-        d = sum(q in s for q in _neighbors8(p))
+        d = sum(1 for _ in _graph_neighbors(s, p))
         degrees.append(d)
         edges2 += d
     edges = edges2 // 2
@@ -83,8 +97,8 @@ def _bfs_farthest(coord_set, start):
         p = q.popleft()
         if dist[p] > dist[far]:
             far = p
-        for z in _neighbors8(p):
-            if z in coord_set and z not in dist:
+        for z in _graph_neighbors(coord_set, p):
+            if z not in dist:
                 dist[z] = dist[p] + 1
                 parent[z] = p
                 q.append(z)
