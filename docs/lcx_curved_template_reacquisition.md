@@ -11,7 +11,7 @@ Scientific rules:
 - The old Series-1039 mask contributes only a longitudinal fingerprint: mask support, plaque-support landmarks, and curved-series CT attenuation.
 - The same matcher must first recognize the accepted RCA using the old RCA Series-1035 template.
 - The LCX template is also scored against accepted RCA and accepted LAD as wrong-vessel controls.
-- A template match does **not** establish LCX identity. A passing result is promoted only to `LCX_CURVED_TEMPLATE_MATCHES_SOURCE_PATH_REQU%ITS_ANATOMICAL_QC`.
+- A template match does **not** establish LCX identity. A passing result is promoted only to `LCX_CURVED_TEMPLATE_MATCHES_SOURCE_PATH_REQUIRES_ANATOMICAL_QC`.
 - No circumferential registration, plaque volume, or source-space lesion localization is claimed.
 
 Outputs include candidate source centerlines, control scores, candidate ranking, automatic source-CCTA orthogonal QC, an HTML report, and a packaged ZIP.
