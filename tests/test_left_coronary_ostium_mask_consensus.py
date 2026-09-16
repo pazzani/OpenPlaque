@@ -1,10 +1,10 @@
 import numpy as np
-from openplaque import left_coronary_ostium_mask_consensus as m
+from openplaque import left_coronary_ostium_mask_consensus_v1_1 as m
 
 
 def test_algorithm_and_baseline_are_frozen():
     assert m.BASELINE == "0593b453959f5a353d644267fbeef24b514ef4d7"
-    assert m.ALGORITHM == "left-coronary-ostium-mask-consensus-v1.0-lowmem"
+    assert m.ALGORITHM == "left-coronary-ostium-mask-consensus-v1.1-robust-direction"
 
 
 def test_synthetic_interface_cluster_self_test():
@@ -48,4 +48,15 @@ def test_local_direction_points_toward_greater_extra_aortic_distance():
     for x in range(shape[2]):
         outside[:,:,x] = max(0, x-15)
     t = m._local_direction(np.array([15.,15.,16.]), union, outside, np.ones(3), radius_mm=6)
+    assert t[2] > 0.5
+
+
+def test_local_direction_gradient_fallback_handles_too_few_mask_points():
+    shape = (21,21,21)
+    union = np.zeros(shape, bool)
+    union[10,10,10:12] = True
+    outside = np.zeros(shape, float)
+    for x in range(shape[2]):
+        outside[:,:,x] = max(0, x-10)
+    t = m._local_direction(np.array([10.,10.,10.]), union, outside, np.ones(3), radius_mm=3)
     assert t[2] > 0.5
