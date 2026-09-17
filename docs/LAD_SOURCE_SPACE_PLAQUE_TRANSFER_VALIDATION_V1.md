@@ -19,15 +19,15 @@ The research LAD path consists of the frozen 24.997-mm LAD plus the independentl
 
 ## Prospective transfer gates
 
-The LAD transfer passes only if all of the following hold:
+The LAD transfer uses the same specificity standards as the successful nominal RCA excess experiment and passes only if all of the following hold:
 
 - frozen-LAD source station QC >= 0.90;
 - confirmed distal-extension source station QC >= 0.85;
 - at least 4 majority-positive and 5 vote-free frozen-LAD validation bins;
-- majority-positive versus vote-free AUROC >= 0.75;
-- if at least two strict 5/5 bins are present, strict 5/5 versus vote-free AUROC >= 0.85;
-- median excess in majority-positive bins is at least 1.5 times the vote-free median;
-- minimum non-nominal shell Spearman correlation with the nominal 1.0-mm profile >= 0.75.
+- majority-positive versus vote-free AUROC >= 0.80;
+- if at least two strict 5/5 bins are present, strict 5/5 versus vote-free AUROC >= 0.90;
+- median excess in majority-positive bins is at least 2.0 times the vote-free median;
+- minimum non-nominal shell Spearman correlation with the nominal 1.0-mm profile >= 0.80.
 
 ## Outputs
 
