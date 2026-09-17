@@ -30,17 +30,15 @@ def test_reentry_gate():
 
 
 def test_branch_control_distinguishes_parent_and_side_branch():
-    # Shared incoming x-axis to split at x=10. C6 continues shallowly; C7 leaves at 60 degrees.
-    pre = np.column_stack([np.linspace(0, 10, 41), np.zeros(41), np.zeros(41)])
+    split = 20.25
+    pre = np.column_stack([np.linspace(0, split, 82), np.zeros(82), np.zeros(82)])
     t = np.linspace(0, 8, 33)
-    c6post = np.column_stack([10 + t, np.tan(np.deg2rad(10))*t, np.zeros_like(t)])
-    c7post = np.column_stack([10 + np.cos(np.deg2rad(60))*t, np.sin(np.deg2rad(60))*t, np.zeros_like(t)])
+    c6post = np.column_stack([split + np.cos(np.deg2rad(10))*t, np.sin(np.deg2rad(10))*t, np.zeros_like(t)])
+    c7post = np.column_stack([split + np.cos(np.deg2rad(60))*t, np.sin(np.deg2rad(60))*t, np.zeros_like(t)])
     c6 = np.vstack([pre, c6post[1:]])
     c7 = np.vstack([pre, c7post[1:]])
-    # Rescale the shared prefix so the declared split arc is 20.25 mm.
-    c6[:,0] *= 20.25 / 10.0
-    c7[:,0] *= 20.25 / 10.0
-    # The post-split synthetic geometry was distorted by x scaling, but still separates strongly.
     out = _branch_control(c6, c7)
-    assert out["side_branch_like_angle_deg"] > out["parent_like_angle_deg"]
-    assert out["parent_side_angle_separation_deg"] > 20.0
+    assert out["parent_like_angle_deg"] < 25.0
+    assert out["side_branch_like_angle_deg"] > 35.0
+    assert out["parent_side_angle_separation_deg"] > 25.0
+    assert out["control_gate_pass"]
