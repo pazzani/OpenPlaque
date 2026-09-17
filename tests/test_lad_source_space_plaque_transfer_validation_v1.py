@@ -3,6 +3,8 @@ import pandas as pd
 
 from openplaque.lad_source_space_plaque_transfer_validation_v1 import (
     BASELINE, SHELLS, NOMINAL_SHELL, RCA_REFERENCE_ARC,
+    MIN_MAJORITY_AUC, MIN_STRICT_AUC, MIN_POS_NEG_RATIO,
+    MIN_CROSS_SHELL_SPEARMAN,
     _auc, _arc, _join_frozen_and_extension, _fit_rca_models,
     synthetic_self_test,
 )
@@ -13,6 +15,10 @@ def test_constants_and_self_test():
     assert SHELLS == (0.75, 1.0, 1.25, 1.5)
     assert NOMINAL_SHELL == 1.0
     assert RCA_REFERENCE_ARC == (20.0, 50.0)
+    assert MIN_MAJORITY_AUC == 0.80
+    assert MIN_STRICT_AUC == 0.90
+    assert MIN_POS_NEG_RATIO == 2.00
+    assert MIN_CROSS_SHELL_SPEARMAN == 0.80
     assert synthetic_self_test()["ok"] is True
 
 
