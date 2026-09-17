@@ -3,30 +3,38 @@ from __future__ import annotations
 """Technical v1.1 fix for left-coronary backbone branch discovery.
 
 The v1.0 notebook incorrectly treated ``Cache/Secondary_3D_Vesselness_Topology_v1/vesselness.npy``
-as if it were a full Series-7 volume.  That cache is an older cropped ROI (for this case
-63x79x59), whereas ``series7_int16.npy`` is the full source CCTA (524x512x512).  Sampling the
+as if it were a full Series-7 volume. That cache is an older cropped ROI (for this case
+63x79x59), whereas ``series7_int16.npy`` is the full source CCTA (524x512x512). Sampling the
 cropped array with the full source image transform is invalid.
 
 This wrapper keeps every prospective branch-discovery gate and search parameter from v1.0, but
 replaces only the vesselness plumbing: a full-resolution multiscale Frangi field is computed
 once in a source-CCTA ROI enclosing the validated label-neutral backbone plus a 14-mm margin.
-The 14-mm margin exceeds the 9-mm maximum branch search and preview reach.  All vesselness
+The 14-mm margin exceeds the 9-mm maximum branch search and preview reach. All vesselness
 sampling is then performed in that ROI's explicit source-voxel coordinates.
 
-Research use only.  No clinical vessel labels or frozen anatomy are changed.
+A second technical guard handles branch hypotheses for which the beam accepts no first step.
+Those hypotheses legitimately contain only the seed point. They are now recorded as failed
+zero-length hypotheses instead of passing a one-point array to ``numpy.gradient``. The same
+guard is applied to overlap/tangent diagnostics. No branch acceptance threshold or scientific
+gate is changed.
+
+Research use only. No clinical vessel labels or frozen anatomy are changed.
 """
 
 import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import SimpleITK as sitk
 from scipy import ndimage as ndi
 from scipy.ndimage import map_coordinates
+from scipy.spatial import cKDTree
 
 from . import left_coronary_backbone_branch_discovery_v1 as base
 
-ALGORITHM = "left-coronary-backbone-branch-discovery-v1.1-local-source-vesselness"
+ALGORITHM = "left-coronary-backbone-branch-discovery-v1.1-local-source-vesselness-safe-short-paths"
 VESSELNESS_MARGIN_MM = 14.0
 
 
@@ -123,12 +131,92 @@ def _source_fixed(cache):
 
 
 _ORIGINAL_SAMPLE_ARRAY = base._sample_array
+_ORIGINAL_DENSE_QC = base._dense_qc
 
 
 def _sample_array_fixed(ref, arr, pts, cval=0.0):
     if isinstance(arr, _LazySourceVesselness):
         return arr.sample(ref, pts, cval=cval)
     return _ORIGINAL_SAMPLE_ARRAY(ref, arr, pts, cval=cval)
+
+
+def _dense_qc_safe(ref, src, path):
+    """Treat a zero-length/one-point hypothesis as a failed hypothesis, not a crash."""
+    p, q = base._resample(np.asarray(path, float), base.PLANE_STEP_MM)
+    if len(p) < 2 or (len(q) and float(q[-1]) <= 1e-9):
+        row = {
+            "center_hu": np.nan,
+            "component_found": False,
+            "radius_mm": np.nan,
+            "centroid_offset_mm": np.inf,
+            "axis_ratio": np.inf,
+            "contrast_hu": -np.inf,
+            "index": 0,
+            "arc_mm": 0.0,
+            "plane_pass": False,
+            "technical_short_path": True,
+        }
+        return p, q, pd.DataFrame([row])
+    out_p, out_q, df = _ORIGINAL_DENSE_QC(ref, src, path)
+    if "technical_short_path" not in df.columns:
+        df["technical_short_path"] = False
+    return out_p, out_q, df
+
+
+def _safe_unit_tangents(points):
+    p = np.asarray(points, float)
+    if len(p) < 2:
+        return np.zeros_like(p, dtype=float)
+    t = np.gradient(p, axis=0)
+    t /= np.maximum(np.linalg.norm(t, axis=1, keepdims=True), 1e-9)
+    return t
+
+
+def _overlap_metrics_safe(query, ref, step=.25):
+    """Overlap metrics that are well-defined for a one-point failed hypothesis."""
+    q, qa = base._resample(np.asarray(query, float), step)
+    r, ra = base._resample(np.asarray(ref, float), step)
+    if len(q) == 0 or len(r) == 0:
+        return {
+            "min_distance_mm": np.inf,
+            "median_distance_mm": np.inf,
+            "p90_distance_mm": np.inf,
+            "endpoint_distance_mm": np.inf,
+            "fraction_within_2mm": 0.0,
+            "max_contiguous_span_within_2mm": 0.0,
+            "median_tangent_alignment_within_2mm": 0.0,
+            "nearest_query_arc_mm": 0.0,
+            "nearest_reference_arc_mm": 0.0,
+        }
+    tree = cKDTree(r)
+    d, ix = tree.query(q)
+    tq = _safe_unit_tangents(q)
+    tr = _safe_unit_tangents(r)
+    al = np.abs(np.sum(tq * tr[ix], axis=1))
+    within = d <= 2.0
+    best = cur = 0.0
+    for v in within:
+        cur = cur + step if v else 0.0
+        best = max(best, cur)
+    k = int(np.argmin(d))
+    return {
+        "min_distance_mm": float(np.min(d)),
+        "median_distance_mm": float(np.median(d)),
+        "p90_distance_mm": float(np.percentile(d, 90)),
+        "endpoint_distance_mm": float(d[-1]),
+        "fraction_within_2mm": float(np.mean(within)),
+        "max_contiguous_span_within_2mm": float(best),
+        "median_tangent_alignment_within_2mm": float(np.median(al[within])) if np.any(within) else 0.0,
+        "nearest_query_arc_mm": float(qa[k]),
+        "nearest_reference_arc_mm": float(ra[ix[k]]),
+    }
+
+
+def _branch_angle_safe(path, backbone_tangent):
+    p = np.asarray(path, float)
+    if len(p) < 2 or float(base._arc(p)[-1]) <= 1e-9:
+        return 0.0
+    return base._angle(backbone_tangent, base._unit(base._interp(p, [min(3.0, float(base._arc(p)[-1]))])[0] - p[0]))
 
 
 def synthetic_local_vesselness_self_test():
@@ -140,22 +228,36 @@ def synthetic_local_vesselness_self_test():
     return {"ok": True, "max_vesselness": float(vv.max())}
 
 
+def synthetic_short_path_self_test():
+    p = np.array([[1.0, 2.0, 3.0]])
+    t = _safe_unit_tangents(p)
+    assert t.shape == p.shape and np.all(t == 0)
+    ov = _overlap_metrics_safe(p, np.array([[1.0, 2.0, 3.0], [2.0, 2.0, 3.0]]))
+    assert np.isfinite(ov["min_distance_mm"])
+    assert ov["median_tangent_alignment_within_2mm"] == 0.0
+    assert _branch_angle_safe(p, np.array([1.0, 0.0, 0.0])) == 0.0
+    return {"ok": True, "one_point_overlap_distance_mm": ov["min_distance_mm"]}
+
+
 def run(drive_root="/content/drive/MyDrive/OpenPlaque", output_dir=None):
-    # Patch only the invalid vesselness-coordinate assumption. All discovery/QC logic,
-    # thresholds, branch gates, control logic, output names, and frozen-anatomy rules remain v1.0.
+    # Patch only technical implementation issues. All discovery/QC thresholds, branch gates,
+    # control logic, search radii, and frozen-anatomy rules remain v1.0.
     base._source = _source_fixed
     base._sample_array = _sample_array_fixed
+    base._dense_qc = _dense_qc_safe
+    base._overlap_metrics = _overlap_metrics_safe
+    base._branch_angle = _branch_angle_safe
     base.ALGORITHM = ALGORITHM
     result = base.run(drive_root=drive_root, output_dir=output_dir)
 
-    # Add explicit provenance so this technical correction is visible in every completed run.
     out = Path(output_dir) if output_dir else Path(drive_root) / base.OUTPUT_DIRNAME
     provenance = {
         "algorithm": ALGORITHM,
         "vesselness_source": "multiscale Frangi recomputed from full-resolution Series-7 source CCTA in a local backbone ROI",
         "vesselness_margin_mm": VESSELNESS_MARGIN_MM,
         "ignored_incompatible_cached_vesselness_shape": True,
-        "scientific_change": "none to prospective branch/control/QC gates; coordinate-space implementation fix only",
+        "short_path_guard": "one-point/zero-length failed beam hypotheses are recorded as failed QC rather than passed to numpy.gradient",
+        "scientific_change": "none to prospective branch/control/QC gates; technical robustness fixes only",
     }
     (out / "vesselness_coordinate_fix_v1_1.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
     return result
