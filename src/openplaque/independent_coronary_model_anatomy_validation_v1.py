@@ -80,14 +80,38 @@ def _load_source(root):
     return SourceGeometry(meta),src,meta
 
 def write_source_nifti(drive_root="/content/drive/MyDrive/OpenPlaque",out_path=None):
+    """Write the cached Series 7 source volume with exact physical geometry.
+
+    Despite the historical function name, the output format is chosen from the
+    supplied filename. For the ImageCAS-X Colab we deliberately use uncompressed
+    .mha because compressed NIfTI writes proved unreliable in the Colab runtime.
+    The writer is explicit and the result is reopened before returning.
+    """
     root=Path(drive_root); geom,src,_=_load_source(root)
-    out=Path(out_path) if out_path else root/OUTPUT_DIRNAME/"input"/"ucla_series7.img.nii.gz"
+    out=Path(out_path) if out_path else Path("/content/ucla_series7.img.mha")
     out.parent.mkdir(parents=True,exist_ok=True)
     img=sitk.GetImageFromArray(np.asarray(src))
     img.SetSpacing(tuple(float(v) for v in geom.spacing_xyz))
     img.SetOrigin(tuple(float(v) for v in geom.origin))
     img.SetDirection(tuple(float(v) for v in geom.direction.ravel()))
-    sitk.WriteImage(img,str(out),True)
+
+    writer=sitk.ImageFileWriter()
+    writer.SetFileName(str(out))
+    writer.SetUseCompression(False)
+    writer.Execute(img)
+
+    if not out.is_file() or out.stat().st_size == 0:
+        raise RuntimeError(f"Source image writer returned without a file: {out}")
+
+    chk=sitk.ReadImage(str(out))
+    if tuple(chk.GetSize()) != tuple(img.GetSize()):
+        raise RuntimeError(f"Source image readback size mismatch: {chk.GetSize()} vs {img.GetSize()}")
+    if not np.allclose(chk.GetSpacing(), img.GetSpacing(), atol=1e-6):
+        raise RuntimeError(f"Source image readback spacing mismatch: {chk.GetSpacing()} vs {img.GetSpacing()}")
+    if not np.allclose(chk.GetOrigin(), img.GetOrigin(), atol=1e-4):
+        raise RuntimeError(f"Source image readback origin mismatch: {chk.GetOrigin()} vs {img.GetOrigin()}")
+    if not np.allclose(chk.GetDirection(), img.GetDirection(), atol=1e-6):
+        raise RuntimeError("Source image readback direction mismatch")
     return str(out)
 
 def _source_ref(geom,shape):
