@@ -502,7 +502,7 @@ def _auc(y,score):
 
 
 def _developmental_metrics(profile,prior,frozen_length):
-    p=profile[(profile.arc_start_mm>=LAD_EVAL_ARC[0]) & (profile.arc_start_mm<min(LAD_EVAL_ARC[1],math.floor(frozen_length)))].copy()
+    p=profile[(profile.arc_start_mm>=LAD_EVAL_ARC[0]) & (profile.arc_start_mm<min(LAD_EVAL_ARC[1],float(frozen_length)))].copy()
     z=p.merge(prior,on=["arc_start_mm","arc_end_mm"],how="inner")
     pos=z.majority_3plus_signal.fillna(False).astype(bool)
     neg=z.mapped_native_vote_sum.fillna(0).to_numpy(float)==0
