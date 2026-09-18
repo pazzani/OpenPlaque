@@ -734,10 +734,10 @@ def _plot_qc(geom, src, centers, tangents, lumens, surface, scored, out):
 
 def synthetic_self_test():
     # Small 3x8 surface with partial anchors should solve smoothly and remain bounded.
-    anchor = np.full((3, 8), np.nan)
-    weight = np.zeros((3, 8))
-    anchor[:, 0] = [0.7, 0.8, 0.9]
-    anchor[:, 4] = [1.0, 1.1, 1.2]
+    anchor = np.full((30, 8), np.nan)
+    weight = np.zeros((30, 8))
+    anchor[:, 0] = np.linspace(0.7, 0.9, 30)
+    anchor[:, 4] = np.linspace(1.0, 1.2, 30)
     weight[:, [0, 4]] = 3.0
     surf, prior, err = _solve_surface(anchor, weight, .8, .35)
     assert surf.shape == anchor.shape
