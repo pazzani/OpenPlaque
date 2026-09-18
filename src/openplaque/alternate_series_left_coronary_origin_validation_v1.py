@@ -705,29 +705,90 @@ def prepare(
         ["metadata_score", "n_files"], ascending=[False, False]
     ).head(MAX_PRESELECT).copy()
 
-    brightness_rows = []
-    loaded_cache = {}
+    # Expand a same-UID multiphase acquisition into actual 3-D cardiac phases.
+    # Keep path lists in memory only; CSV outputs contain compact provenance.
+    candidate_units = []
+    paths_by_candidate = {}
+    phase_manifest_rows = []
     for _, r in cand.iterrows():
+        desc = str(r.series_description).lower()
+        is_multi = ("multiphase" in desc or "0 - 100" in desc) and int(r.n_files) >= 1000
+        if is_multi:
+            groups = split_multiphase_series(r.folder)
+            for gi, g in enumerate(groups):
+                cid = f"{r.series_uid}::phase::{gi:02d}"
+                row = r.to_dict()
+                row.update({
+                    "candidate_id": cid,
+                    "phase_key": str(g["phase_label"]),
+                    "phase_source": str(g["phase_source"]),
+                    "effective_slices": int(len(g["paths"])),
+                })
+                candidate_units.append(row)
+                paths_by_candidate[cid] = list(g["paths"])
+                phase_manifest_rows.append({
+                    "candidate_id": cid,
+                    "series_uid": str(r.series_uid),
+                    "series_number": int(r.series_number),
+                    "series_description": str(r.series_description),
+                    "phase_key": str(g["phase_label"]),
+                    "phase_source": str(g["phase_source"]),
+                    "effective_slices": int(len(g["paths"])),
+                })
+        else:
+            cid = f"{r.series_uid}::full"
+            phase_key = (
+                f"phase:{r.nominal_phase_pct:.1f}" if np.isfinite(r.nominal_phase_pct)
+                else f"trigger:{r.trigger_time_ms:.1f}" if np.isfinite(r.trigger_time_ms)
+                else f"time:{r.acquisition_time}" if str(r.acquisition_time)
+                else f"desc:{r.series_description}"
+            )
+            row = r.to_dict()
+            row.update({
+                "candidate_id": cid,
+                "phase_key": phase_key,
+                "phase_source": "series",
+                "effective_slices": int(r.n_files),
+            })
+            candidate_units.append(row)
+            paths_by_candidate[cid] = _series_files(r.folder)
+            phase_manifest_rows.append({
+                "candidate_id": cid,
+                "series_uid": str(r.series_uid),
+                "series_number": int(r.series_number),
+                "series_description": str(r.series_description),
+                "phase_key": phase_key,
+                "phase_source": "series",
+                "effective_slices": int(r.n_files),
+            })
+
+    pd.DataFrame(phase_manifest_rows).to_csv(out / "candidate_phase_manifest.csv", index=False)
+    if not candidate_units:
+        raise RuntimeError("No alternate CT candidate units were created")
+
+    import gc
+    ranking_rows = []
+    for unit in candidate_units:
+        cid = unit["candidate_id"]
+        row = dict(unit)
         try:
-            img, arr, geom = load_dicom_series(r.folder)
+            img, arr, geom = load_dicom_paths(paths_by_candidate[cid])
             b = _path_brightness(geom, arr, [lad, rca])
             final = float(
-                r.metadata_score
+                float(unit["metadata_score"])
                 + 2.0 * b["path_coverage_fraction"]
                 + np.clip((b["path_median_hu"] - 100.0) / 100.0, 0.0, 4.0)
             )
-            brightness_rows.append({
-                "series_uid": r.series_uid,
-                "folder": r.folder,
+            row.update({
                 **b,
                 "final_score": final,
                 "load_ok": True,
+                "load_error": "",
             })
-            loaded_cache[str(r.series_uid)] = img
+            del arr, img
+            gc.collect()
         except Exception as e:
-            brightness_rows.append({
-                "series_uid": r.series_uid,
-                "folder": r.folder,
+            row.update({
                 "path_coverage_fraction": 0.0,
                 "path_median_hu": np.nan,
                 "path_p10_hu": np.nan,
@@ -735,30 +796,22 @@ def prepare(
                 "load_ok": False,
                 "load_error": str(e),
             })
+        ranking_rows.append(row)
 
-    br = pd.DataFrame(brightness_rows)
-    ranking = cand.merge(br, on=["series_uid", "folder"], how="left")
-    ranking["phase_key"] = ranking.apply(
-        lambda r:
-            f"phase:{r.nominal_phase_pct:.1f}" if np.isfinite(r.nominal_phase_pct)
-            else f"trigger:{r.trigger_time_ms:.1f}" if np.isfinite(r.trigger_time_ms)
-            else f"time:{r.acquisition_time}" if str(r.acquisition_time)
-            else f"desc:{r.series_description}",
-        axis=1,
-    )
+    ranking = pd.DataFrame(ranking_rows)
     ranking = ranking.sort_values("final_score", ascending=False).reset_index(drop=True)
 
     selected_idx = []
     seen_signatures = set()
     for i, r in ranking.iterrows():
-        sig = (r.phase_key, str(r.kernel), str(r.series_description))
+        sig = (str(r.phase_key), str(r.kernel), str(r.series_description))
         if sig in seen_signatures and len(selected_idx) < 2:
             continue
         if (
             bool(r.load_ok)
-            and r.path_coverage_fraction >= 0.75
+            and float(r.path_coverage_fraction) >= 0.75
             and np.isfinite(r.path_median_hu)
-            and r.path_median_hu >= 150
+            and float(r.path_median_hu) >= 150
         ):
             selected_idx.append(i)
             seen_signatures.add(sig)
@@ -770,7 +823,8 @@ def prepare(
             if (
                 i not in selected_idx
                 and bool(r.load_ok)
-                and r.path_coverage_fraction >= 0.60
+                and float(r.path_coverage_fraction) >= 0.60
+                and int(r.effective_slices) >= 180
             ):
                 selected_idx.append(i)
             if len(selected_idx) >= MAX_ALTERNATE_SERIES:
@@ -779,10 +833,19 @@ def prepare(
     ranking["selected"] = False
     if selected_idx:
         ranking.loc[selected_idx, "selected"] = True
+    # Avoid writing any in-memory Path-list objects; ranking itself is compact.
     ranking.to_csv(out / "candidate_ranking.csv", index=False)
     selected = ranking[ranking.selected].copy()
     if selected.empty:
-        raise RuntimeError("No alternate CT series passed automatic preselection")
+        failures = ranking[[
+            "series_number", "series_description", "phase_key",
+            "effective_slices", "load_ok", "load_error",
+            "path_coverage_fraction", "path_median_hu"
+        ]].head(12)
+        raise RuntimeError(
+            "No alternate CT series passed automatic preselection. Top diagnostics:\n"
+            + failures.to_string(index=False)
+        )
 
     input_dir = local / "model_inputs"
     input_dir.mkdir(parents=True, exist_ok=True)
@@ -796,15 +859,15 @@ def prepare(
         "series_uid": str(ref_row.series_uid),
         "series_number": int(ref_row.series_number),
         "folder": str(ref_row.folder),
+        "phase_key": "reference_best_diastolic",
         "transform_file": None,
     }]
 
     for rank_i, (_, r) in enumerate(selected.iterrows(), 1):
-        uid = str(r.series_uid)
-        img = loaded_cache.get(uid)
-        if img is None:
-            img, _, _ = load_dicom_series(r.folder)
-        scan_id = f"alt_{rank_i:02d}_s{int(r.series_number) if int(r.series_number) >= 0 else rank_i}"
+        cid = str(r.candidate_id)
+        img, _, _ = load_dicom_paths(paths_by_candidate[cid])
+        series_num = int(r.series_number)
+        scan_id = f"alt_{rank_i:02d}_s{series_num if series_num >= 0 else rank_i}"
         input_file = input_dir / f"{scan_id}.img.mha"
         _write_mha(img, input_file)
         tx, reg_info = register_translation(ref_img, img, root_center)
@@ -812,21 +875,26 @@ def prepare(
         sitk.WriteTransform(tx, str(tfm))
         reg_rows.append({
             "scan_id": scan_id,
-            "series_uid": uid,
-            "series_number": int(r.series_number),
+            "candidate_id": cid,
+            "series_uid": str(r.series_uid),
+            "series_number": series_num,
             "series_description": str(r.series_description),
             "phase_key": str(r.phase_key),
+            "effective_slices": int(r.effective_slices),
             **reg_info,
         })
         selected_records.append({
             "scan_id": scan_id,
             "role": "alternate",
-            "series_uid": uid,
-            "series_number": int(r.series_number),
+            "candidate_id": cid,
+            "series_uid": str(r.series_uid),
+            "series_number": series_num,
             "series_description": str(r.series_description),
             "protocol_name": str(r.protocol_name),
             "kernel": str(r.kernel),
             "phase_key": str(r.phase_key),
+            "phase_source": str(r.phase_source),
+            "effective_slices": int(r.effective_slices),
             "folder": str(r.folder),
             "input_file": str(input_file),
             "transform_file": str(tfm),
@@ -835,6 +903,8 @@ def prepare(
             "path_coverage_fraction": float(r.path_coverage_fraction),
             "final_score": float(r.final_score),
         })
+        del img
+        gc.collect()
     pd.DataFrame(reg_rows).to_csv(out / "registration_summary.csv", index=False)
 
     prep = {
