@@ -68,6 +68,30 @@ def _write_json(p, obj):
     Path(p).write_text(json.dumps(obj, indent=2, default=str, allow_nan=True), encoding="utf-8")
 
 
+def discover_dicom_root(drive_root="/content/drive/MyDrive/OpenPlaque", explicit=None):
+    """Resolve the same-exam DICOM study without assuming it lives under OpenPlaque."""
+    if explicit:
+        p = Path(explicit)
+        if p.exists():
+            return p
+        raise FileNotFoundError(f"Explicit DICOM root does not exist: {p}")
+
+    root = Path(drive_root)
+    mydrive = root.parent
+    candidates = [
+        mydrive / "CCTA" / "DICOM" / "3221",
+        mydrive / "DICOM" / "3221",
+        root / "DICOM" / "3221",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    raise FileNotFoundError(
+        "Could not locate the CCTA DICOM study. Checked: "
+        + ", ".join(str(p) for p in candidates)
+    )
+
+
 def _safe_float(v, default=np.nan):
     try:
         return float(v)
@@ -484,7 +508,7 @@ def prepare(
     output_dir=None,
 ):
     root = Path(drive_root)
-    dicom_root = Path(dicom_root) if dicom_root else root / "DICOM" / "3221"
+    dicom_root = discover_dicom_root(drive_root, explicit=dicom_root)
     out = Path(output_dir) if output_dir else root / OUTPUT_DIRNAME
     out.mkdir(parents=True, exist_ok=True)
     local = Path(local_workdir)
