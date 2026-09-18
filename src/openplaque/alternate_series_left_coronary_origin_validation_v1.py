@@ -199,17 +199,35 @@ def _read_header(path):
     return pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
 
 
+def _natural_sort_key(path):
+    import re
+    s = Path(path).name
+    parts = re.split(r"(\\d+)", s)
+    return [int(x) if x.isdigit() else x for x in parts]
+
+
 def _slice_spacing_from_headers(paths, iop):
     if len(paths) < 2:
         return np.nan
+    ordered = sorted(paths, key=_natural_sort_key)
+    try:
+        ds0 = _read_header(ordered[0])
+        sbs = _safe_float(getattr(ds0, "SpacingBetweenSlices", np.nan))
+        if np.isfinite(sbs) and abs(sbs) > 1e-4:
+            return float(abs(sbs))
+    except Exception:
+        pass
+
     row = np.asarray(iop[:3], float)
     col = np.asarray(iop[3:], float)
     normal = np.cross(row, col)
-    sample_idx = np.unique(np.linspace(0, len(paths) - 1, min(len(paths), 64)).astype(int))
+    # Consecutive files are important: the previous linspace sampling multiplied
+    # the apparent spacing by the sampling stride (e.g. 0.3 mm -> 2.4 mm).
+    sample = ordered[: min(len(ordered), 160)]
     proj = []
-    for i in sample_idx:
+    for p in sample:
         try:
-            ds = _read_header(paths[i])
+            ds = _read_header(p)
             pos = np.asarray(ds.ImagePositionPatient, float)
             proj.append(float(pos @ normal))
         except Exception:
@@ -218,7 +236,12 @@ def _slice_spacing_from_headers(paths, iop):
         return np.nan
     dif = np.diff(np.sort(np.unique(np.round(proj, 6))))
     dif = np.abs(dif[dif > 1e-4])
-    return float(np.median(dif)) if len(dif) else np.nan
+    if not len(dif):
+        return np.nan
+    # Use the smallest stable quartile, robust to skipped positions/multiphase repeats.
+    q = np.percentile(dif, 25)
+    near = dif[dif <= max(q * 1.5, q + 1e-3)]
+    return float(np.median(near if len(near) else dif))
 
 
 def scan_dicom_series(dicom_root):
@@ -318,13 +341,120 @@ def identify_reference_series(inventory, source_meta):
 
 
 def _series_files(folder):
-    return sorted([p for p in Path(folder).iterdir() if p.is_file()])
+    return sorted([p for p in Path(folder).iterdir() if p.is_file()], key=_natural_sort_key)
 
 
-def load_dicom_series(folder):
+def _header_phase_value(ds):
+    """Return the strongest standard cardiac-phase identifier available."""
+    for name in (
+        "NominalPercentageOfCardiacPhase",
+        "TriggerTime",
+        "TemporalPositionIdentifier",
+        "AcquisitionNumber",
+    ):
+        v = getattr(ds, name, None)
+        if v not in (None, ""):
+            try:
+                return name, float(v)
+            except Exception:
+                return name, str(v)
+    return None, None
+
+
+def split_multiphase_series(folder, min_slices=180):
+    """Split one same-UID multiphase folder into physical 3-D phase volumes.
+
+    Prefer standard cardiac phase tags. If those are absent, infer phase rank from
+    repeated ImagePositionPatient locations and InstanceNumber. This reads headers
+    only and does not decompress pixels.
+    """
+    files = _series_files(folder)
+    recs = []
+    first = None
+    for p in files:
+        try:
+            ds = _read_header(p)
+            if not hasattr(ds, "ImagePositionPatient") or not hasattr(ds, "ImageOrientationPatient"):
+                continue
+            if first is None:
+                first = ds
+            iop = np.asarray(ds.ImageOrientationPatient, float)
+            normal = np.cross(iop[:3], iop[3:])
+            pos = np.asarray(ds.ImagePositionPatient, float)
+            proj = float(pos @ normal)
+            pname, pval = _header_phase_value(ds)
+            recs.append({
+                "path": p,
+                "proj": proj,
+                "instance": _safe_int(getattr(ds, "InstanceNumber", -1)),
+                "phase_name": pname,
+                "phase_value": pval,
+            })
+        except Exception:
+            continue
+    if len(recs) < 2 * min_slices:
+        return []
+
+    # 1) Standard phase tags: accept only 2..20 reasonably populated groups.
+    for pname in ("NominalPercentageOfCardiacPhase", "TriggerTime",
+                  "TemporalPositionIdentifier", "AcquisitionNumber"):
+        vals = [r["phase_value"] for r in recs if r["phase_name"] == pname]
+        uniq = sorted(set(vals), key=lambda x: str(x))
+        if 2 <= len(uniq) <= 20:
+            groups = []
+            for v in uniq:
+                rr = [r for r in recs if r["phase_name"] == pname and r["phase_value"] == v]
+                # De-duplicate physical positions, keeping earliest InstanceNumber.
+                bypos = {}
+                for r in sorted(rr, key=lambda x: (x["proj"], x["instance"])):
+                    bypos.setdefault(round(r["proj"], 4), r)
+                rr = list(bypos.values())
+                if len(rr) >= min_slices:
+                    groups.append({
+                        "phase_label": f"{pname}:{v}",
+                        "phase_source": pname,
+                        "paths": [r["path"] for r in sorted(rr, key=lambda x: x["proj"])],
+                    })
+            if len(groups) >= 2:
+                return groups
+
+    # 2) Generic repeated-position inference. At each physical z, sort repeated
+    # frames by InstanceNumber; the within-z rank defines the phase.
+    bypos = {}
+    for r in recs:
+        bypos.setdefault(round(r["proj"], 3), []).append(r)
+    counts = np.array([len(v) for v in bypos.values()], int)
+    repeated = counts[counts >= 2]
+    if not len(repeated):
+        return []
+    nphase = int(round(float(np.median(repeated))))
+    if not (2 <= nphase <= 20):
+        return []
+
+    rank_groups = [[] for _ in range(nphase)]
+    for _, rr in sorted(bypos.items()):
+        rr = sorted(rr, key=lambda x: x["instance"])
+        if len(rr) < nphase:
+            continue
+        # If there are extra duplicates, distribute only the first nphase stable ranks.
+        for k in range(nphase):
+            rank_groups[k].append(rr[k])
+
+    groups = []
+    for k, rr in enumerate(rank_groups):
+        if len(rr) >= min_slices:
+            groups.append({
+                "phase_label": f"inferred_phase_{k:02d}_of_{nphase:02d}",
+                "phase_source": "repeated_position_rank",
+                "paths": [r["path"] for r in sorted(rr, key=lambda x: x["proj"])],
+            })
+    return groups
+
+
+def load_dicom_paths(paths):
     records = []
     first = None
-    for p in _series_files(folder):
+    for p in sorted([Path(x) for x in paths], key=_natural_sort_key):
         try:
             ds = pydicom.dcmread(str(p), force=True)
             if not hasattr(ds, "PixelData") or not hasattr(ds, "ImagePositionPatient"):
@@ -335,7 +465,8 @@ def load_dicom_series(folder):
         except Exception:
             continue
     if not records:
-        raise RuntimeError(f"No pixel-bearing DICOM slices in {folder}")
+        raise RuntimeError("No pixel-bearing DICOM slices in supplied path set")
+
     iop = np.asarray(first.ImageOrientationPatient, float)
     row, col = iop[:3], iop[3:]
     normal = np.cross(row, col)
@@ -344,20 +475,43 @@ def load_dicom_series(folder):
         pos = np.asarray(ds.ImagePositionPatient, float)
         rec.append((float(pos @ normal), p, ds, pos))
     rec.sort(key=lambda x: x[0])
+
+    # De-duplicate identical physical positions defensively.
+    dedup = []
+    seen = set()
+    for item in rec:
+        key = round(item[0], 4)
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(item)
+    rec = dedup
+
     positions = np.stack([r[3] for r in rec])
     proj = np.asarray([r[0] for r in rec])
-    dz = np.diff(proj)
-    dz = np.abs(dz[np.abs(dz) > 1e-4])
-    sz = float(np.median(dz)) if len(dz) else _safe_float(getattr(first, "SliceThickness", 1.0), 1.0)
+    dz = np.abs(np.diff(proj))
+    dz = dz[dz > 1e-4]
+    sz = float(np.median(dz)) if len(dz) else _safe_float(
+        getattr(first, "SpacingBetweenSlices", getattr(first, "SliceThickness", 1.0)), 1.0
+    )
     ps = np.asarray(first.PixelSpacing, float)
     sy, sx = float(ps[0]), float(ps[1])
+
     vol = []
     for _, _, ds, _ in rec:
-        a = ds.pixel_array.astype(np.float32)
+        try:
+            a = ds.pixel_array.astype(np.float32)
+        except Exception as e:
+            raise RuntimeError(
+                "DICOM pixel decompression failed. The Colab must install "
+                "pylibjpeg and pylibjpeg-libjpeg before preparation. Original error: "
+                + str(e)
+            ) from e
         slope = _safe_float(getattr(ds, "RescaleSlope", 1.0), 1.0)
         intercept = _safe_float(getattr(ds, "RescaleIntercept", 0.0), 0.0)
         vol.append(a * slope + intercept)
     arr = np.stack(vol).astype(np.float32)
+
     D = np.column_stack([row, col, normal])
     geom = Geometry(
         spacing_xyz=np.asarray([sx, sy, sz], float),
@@ -369,6 +523,10 @@ def load_dicom_series(folder):
     img.SetOrigin(tuple(float(v) for v in geom.origin))
     img.SetDirection(tuple(float(v) for v in geom.direction.ravel()))
     return img, arr, geom
+
+
+def load_dicom_series(folder):
+    return load_dicom_paths(_series_files(folder))
 
 
 def _sample_array(geom, arr, pts, cval=np.nan):
