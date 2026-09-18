@@ -697,29 +697,39 @@ def run(drive_root="/content/drive/MyDrive/OpenPlaque", output_dir=None):
     control_qc = {}
     control_gates = {}
     for v in COST_VARIANTS:
-        m = _run_one(
-            geom, src, aorta, forbidden_global, surf_tree,
-            rca_start, rca_nearest, rca_target, rca_downstream, v
-        )
-        p = m.pop("resampled_path")
-        qdf = m.pop("qdf")
-        dist_series = m.pop("surface_distance_series_mm")
-        control_paths[v["name"]] = p
-        control_qc[v["name"]] = qdf
-        known_dist = _known_path_distance(p, rca_known_prox)
-        target_to_root = float(np.linalg.norm(p[-1] - rca_root))
-        m["distance_to_known_RCA"] = known_dist
-        m["target_distance_to_known_RCA_root_mm"] = target_to_root
-        m["surface_distance_series_mm"] = [float(x) for x in dist_series]
-        gate = _control_gate(m, known_dist, target_to_root)
-        control_results[v["name"]] = m
-        control_gates[v["name"]] = gate
-        pd.DataFrame(p, columns=["lps_x_mm","lps_y_mm","lps_z_mm"]).to_csv(out/f"RCA_local_control_{v['name']}.csv", index=False)
-        qdf.to_csv(out/f"RCA_local_control_QC_{v['name']}.csv", index=False)
+        name = v["name"]
+        try:
+            m = _run_one(
+                geom, src, aorta, forbidden_global, surf_tree,
+                rca_start, rca_nearest, rca_target, rca_downstream, v
+            )
+            p = m.pop("resampled_path")
+            qdf = m.pop("qdf")
+            dist_series = m.pop("surface_distance_series_mm")
+            control_paths[name] = p
+            control_qc[name] = qdf
+            known_dist = _known_path_distance(p, rca_known_prox)
+            target_to_root = float(np.linalg.norm(p[-1] - rca_root))
+            m["distance_to_known_RCA"] = known_dist
+            m["target_distance_to_known_RCA_root_mm"] = target_to_root
+            m["surface_distance_series_mm"] = [float(x) for x in dist_series]
+            gate = _control_gate(m, known_dist, target_to_root)
+            control_results[name] = m
+            control_gates[name] = gate
+            pd.DataFrame(p, columns=["lps_x_mm","lps_y_mm","lps_z_mm"]).to_csv(out/f"RCA_local_control_{name}.csv", index=False)
+            qdf.to_csv(out/f"RCA_local_control_QC_{name}.csv", index=False)
+        except RuntimeError as exc:
+            control_results[name] = {"search_error": str(exc)}
+            control_gates[name] = False
 
-    control_sep = _symmetric_separation(control_paths["hu140"], control_paths["hu180"])
+    if all(name in control_paths for name in ("hu140", "hu180")):
+        control_sep = _symmetric_separation(control_paths["hu140"], control_paths["hu180"])
+    else:
+        control_sep = {"median_mm": np.nan, "p90_mm": np.nan, "max_mm": np.nan, "endpoint_distance_mm": np.nan}
+
     control_pass = bool(
-        all(control_gates.values())
+        len(control_paths) == len(COST_VARIANTS)
+        and all(control_gates.values())
         and control_sep["median_mm"] <= MAX_VARIANT_MEDIAN_SEP_MM
         and control_sep["p90_mm"] <= MAX_VARIANT_P90_SEP_MM
         and control_sep["endpoint_distance_mm"] <= MAX_VARIANT_ENDPOINT_SEP_MM
@@ -740,24 +750,34 @@ def run(drive_root="/content/drive/MyDrive/OpenPlaque", output_dir=None):
         ) if lad_arc[-1] > KNOWN_BACKTRACK_EXCLUSION_MM else np.empty((0,3))
 
         for v in COST_VARIANTS:
-            m = _run_one(
-                geom, src, aorta, forbidden_global, surf_tree,
-                lad_start, lad_nearest, lad_target, lad_downstream, v
-            )
-            p = m.pop("resampled_path")
-            qdf = m.pop("qdf")
-            dist_series = m.pop("surface_distance_series_mm")
-            m["surface_distance_series_mm"] = [float(x) for x in dist_series]
-            lad_paths[v["name"]] = p
-            lad_qc[v["name"]] = qdf
-            lad_gates[v["name"]] = _lad_gate(m)
-            lad_results[v["name"]] = m
-            pd.DataFrame(p, columns=["lps_x_mm","lps_y_mm","lps_z_mm"]).to_csv(out/f"LAD_local_root_bridge_{v['name']}.csv", index=False)
-            qdf.to_csv(out/f"LAD_local_root_bridge_QC_{v['name']}.csv", index=False)
+            name = v["name"]
+            try:
+                m = _run_one(
+                    geom, src, aorta, forbidden_global, surf_tree,
+                    lad_start, lad_nearest, lad_target, lad_downstream, v
+                )
+                p = m.pop("resampled_path")
+                qdf = m.pop("qdf")
+                dist_series = m.pop("surface_distance_series_mm")
+                m["surface_distance_series_mm"] = [float(x) for x in dist_series]
+                lad_paths[name] = p
+                lad_qc[name] = qdf
+                lad_gates[name] = _lad_gate(m)
+                lad_results[name] = m
+                pd.DataFrame(p, columns=["lps_x_mm","lps_y_mm","lps_z_mm"]).to_csv(out/f"LAD_local_root_bridge_{name}.csv", index=False)
+                qdf.to_csv(out/f"LAD_local_root_bridge_QC_{name}.csv", index=False)
+            except RuntimeError as exc:
+                lad_results[name] = {"search_error": str(exc)}
+                lad_gates[name] = False
 
-        lad_sep = _symmetric_separation(lad_paths["hu140"], lad_paths["hu180"])
+        if all(name in lad_paths for name in ("hu140", "hu180")):
+            lad_sep = _symmetric_separation(lad_paths["hu140"], lad_paths["hu180"])
+        else:
+            lad_sep = {"median_mm": np.nan, "p90_mm": np.nan, "max_mm": np.nan, "endpoint_distance_mm": np.nan}
+
         lad_pass = bool(
-            all(lad_gates.values())
+            len(lad_paths) == len(COST_VARIANTS)
+            and all(lad_gates.values())
             and lad_sep["median_mm"] <= MAX_VARIANT_MEDIAN_SEP_MM
             and lad_sep["p90_mm"] <= MAX_VARIANT_P90_SEP_MM
             and lad_sep["endpoint_distance_mm"] <= MAX_VARIANT_ENDPOINT_SEP_MM
@@ -803,7 +823,8 @@ def run(drive_root="/content/drive/MyDrive/OpenPlaque", output_dir=None):
     qc_by.update({f"LAD_{k}":v for k,v in lad_qc.items()})
     _plot_hu(qc_by, out/"03_local_root_bridge_center_HU.png")
     if lad_paths:
-        _plot_planes(geom, src, lad_paths["hu140"], out/"04_LAD_local_root_bridge_source_planes.png")
+        preferred = lad_paths["hu140"] if "hu140" in lad_paths else next(iter(lad_paths.values()))
+        _plot_planes(geom, src, preferred, out/"04_LAD_local_root_bridge_source_planes.png")
 
     summary = {
         "status": status,
