@@ -19,7 +19,7 @@ The algorithm:
 - orients the frozen RCA and LAD with the endpoint nearest the aorta first;
 - defines a local aortic-surface target around the nearest surface point to the search start;
 - constrains search to a 12-mm-radius corridor around the straight start-to-local-aorta segment;
-- excludes atria, ventricles, and pulmonary artery;
+- hard-excludes the deep interior of atrial, ventricular, and pulmonary-artery masks, while leaving boundary neighborhoods traversable so mask dilation cannot create an artificial epicardial barrier;
 - excludes the aortic interior except for the local target surface;
 - excludes already-known downstream coronary centerline beyond the launch neighborhood;
 - requires progressive reduction in distance to the aortic surface;
@@ -40,7 +40,7 @@ For both variants the recovered root-directed path must:
 - make predominantly monotonic progress toward the aortic surface;
 - agree with the other cost variant.
 
-If the RCA control fails, the LAD result is not interpreted.
+If the RCA control fails, the LAD result is not interpreted. If a constrained search has no finite route, that variant is recorded as a failed gate rather than raising an exception.
 
 ## LAD gates
 
