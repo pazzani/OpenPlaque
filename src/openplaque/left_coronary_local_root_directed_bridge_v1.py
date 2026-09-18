@@ -43,7 +43,7 @@ CORRIDOR_RADIUS_MM = 12.0
 ROI_PAD_MM = 15.0
 KNOWN_BACKTRACK_EXCLUSION_MM = 1.5
 KNOWN_PATH_EXCLUSION_RADIUS_MM = 1.5
-CHAMBER_DILATION_MM = 0.8
+DEEP_ANATOMY_EROSION_MM = 0.8
 
 COST_VARIANTS = (
     {"name": "hu140", "bright_threshold_hu": 140.0, "hu_weight": 4.0, "centrality_weight": 2.0},
@@ -262,11 +262,19 @@ def _crop_bounds(shape, geom, start_xyz, target_mask, pad_mm=ROI_PAD_MM):
     return lo, hi
 
 
-def _dilate_mm(mask, spacing_zyx, mm):
+def _erode_mm(mask, spacing_zyx, mm):
+    """Keep only deep interior of anatomy masks for hard exclusion.
+
+    Coronary arteries lie immediately adjacent to cardiac structures, so dilating
+    blood-pool/arterial masks can create an artificial impenetrable barrier.
+    Deep-interior erosion preserves the scientific exclusion (the path may not
+    traverse a chamber or pulmonary-artery lumen) while not blocking the true
+    epicardial boundary neighborhood.
+    """
     if mm <= 0:
         return mask.copy()
-    dist = ndi.distance_transform_edt(~mask, sampling=spacing_zyx)
-    return dist <= float(mm)
+    inside = ndi.distance_transform_edt(mask, sampling=spacing_zyx)
+    return mask & (inside >= float(mm))
 
 
 def _known_path_exclusion(crop_xyz, known_downstream_xyz, radius_mm=KNOWN_PATH_EXCLUSION_RADIUS_MM):
@@ -662,7 +670,7 @@ def run(drive_root="/content/drive/MyDrive/OpenPlaque", output_dir=None):
     chambers = np.zeros(src.shape, bool)
     for p in CHAMBER_MASKS:
         chambers |= _load_mask(root/p, src.shape, geom)
-    forbidden_global = _dilate_mm(chambers | pulmonary, geom.spacing_zyx, CHAMBER_DILATION_MM)
+    forbidden_global = _erode_mm(chambers | pulmonary, geom.spacing_zyx, DEEP_ANATOMY_EROSION_MM)
 
     surf_idx, surf_xyz, surf_tree = _surface_cloud(aorta, geom)
 
@@ -811,6 +819,7 @@ def run(drive_root="/content/drive/MyDrive/OpenPlaque", output_dir=None):
             "progress_step_tolerance_mm": PROGRESS_STEP_TOL_MM,
             "minimum_progress_step_fraction": MIN_PROGRESS_STEP_FRACTION,
             "maximum_progress_backtrack_mm": MAX_PROGRESS_BACKTRACK_MM,
+            "deep_anatomy_hard_exclusion_erosion_mm": DEEP_ANATOMY_EROSION_MM,
         },
         "anatomy": {
             "RCA_proximal_endpoint_distance_to_aorta_surface_mm": rca_prox_d,
@@ -839,7 +848,7 @@ def run(drive_root="/content/drive/MyDrive/OpenPlaque", output_dir=None):
         "research_local_bridge_candidate_established": bool(status == STATUS_CANDIDATE),
         "scientific_boundary": (
             "This experiment directly diagnoses the failure mode of the prior global geodesic: a proximal bridge must move locally toward the nearest aortic surface rather than retrace the known distal artery or take a long route to the RCA ostium. "
-            "The search is therefore constrained to a prespecified straight-line corridor, excludes already-known downstream coronary centerline, and requires monotonic aortic-surface progress after the same rules recover the RCA positive control. "
+            "The search is therefore constrained to a prespecified straight-line corridor, excludes already-known downstream coronary centerline, hard-excludes only the deep interior of chamber/pulmonary masks (to avoid an artificial barrier at epicardial boundaries), and requires monotonic aortic-surface progress after the same rules recover the RCA positive control. "
             "A positive result would still establish only a source-supported local proximal left-coronary bridge candidate, not clinical left-main identity. The frozen master remains unchanged."
         ),
     }
