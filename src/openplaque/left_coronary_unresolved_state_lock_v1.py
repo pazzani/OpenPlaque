@@ -210,7 +210,7 @@ def _evidence_table(master, through, parent, ostium_mask, ostium_blind, ostium_m
         {
             "evidence": "C6/C7 structural source-QC freeze",
             "observed": lcx_freeze.get("status"),
-            "supports_unresolved_lock": lcx_freeze.get("status") == EXPECTED_LCX_FREEZE and not bool(lcx_freeze.get("decision",{}).get("clinical_identity_established",False)),
+            "supports_unresolved_lock": lcx_freeze.get("status") == EXPECTED_LCX_FREEZE and not bool(lcx_freeze.get("decision",{}).get("clinical_LCX_OM_identity_established",False)),
             "role": "research structural labels only",
         },
     ]
