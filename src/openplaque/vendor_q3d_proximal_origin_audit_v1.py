@@ -664,64 +664,77 @@ def _profile_for_view(arr,axis,center,threshold):
     return width,inten
 
 
-def proximal_profile_similarity(arrays_by_vessel,view_df,proximal_side):
+def proximal_profile_similarity(arrays_by_vessel,view_df,rca_template):
+    usable=rca_template[rca_template.usable_for_orientation]
     profiles={}
     for vessel,stack in arrays_by_vessel.items():
-        rows=view_df[view_df.vessel==vessel].sort_values("view_index")
+        rows=view_df[view_df.vessel==vessel].set_index("view_index")
         ws=[]; ins=[]
-        for (_,r),arr in zip(rows.iterrows(),stack):
-            w,i=_profile_for_view(arr,r.analysis_axis,int(r.center_coordinate_px),float(r.threshold))
-            if proximal_side=="right":
-                w=w[::-1]; i=i[::-1]
-            w=w/max(np.percentile(w,95),1.0)
-            denom=max(np.percentile(i,95)-np.percentile(i,5),1e-6)
-            i=(i-np.percentile(i,5))/denom
-            ws.append(w); ins.append(i)
-        profiles[vessel]=(np.median(np.stack(ws),axis=0),np.median(np.stack(ins),axis=0))
+        for _,t in usable.iterrows():
+            side=t.rca_proximal_end
+            for idx in (int(t.view_a),int(t.view_b)):
+                r=rows.loc[idx]
+                w,i=_profile_for_view(stack[idx],r.analysis_axis,int(r.center_coordinate_px),float(r.threshold))
+                if side=="right":
+                    w=w[::-1]; i=i[::-1]
+                w=w/max(np.percentile(w,95),1.0)
+                denom=max(np.percentile(i,95)-np.percentile(i,5),1e-6)
+                i=(i-np.percentile(i,5))/denom
+                ws.append(w); ins.append(i)
+        if not ws:
+            profiles[vessel]=(np.full(512,np.nan),np.full(512,np.nan))
+        else:
+            profiles[vessel]=(np.median(np.stack(ws),axis=0),np.median(np.stack(ins),axis=0))
     n=max(8,int(round(.30*len(profiles["LAD"][0]))))
     a=np.r_[profiles["LAD"][0][:n],profiles["LAD"][1][:n]]
     b=np.r_[profiles["CX"][0][:n],profiles["CX"][1][:n]]
-    corr=float(np.corrcoef(a,b)[0,1]) if np.std(a)>0 and np.std(b)>0 else np.nan
+    ok=np.isfinite(a)&np.isfinite(b)
+    corr=float(np.corrcoef(a[ok],b[ok])[0,1]) if ok.sum()>10 and np.std(a[ok])>0 and np.std(b[ok])>0 else np.nan
     return profiles,corr
-
 
 def _display_limits(arr):
     f=arr[np.isfinite(arr)]
     return tuple(float(x) for x in np.percentile(f,[2,98])) if len(f) else (0.0,1.0)
 
 
-def plot_montage(vessel,stack,metrics,proximal_side,out):
+def plot_montage(vessel,stack,metrics,rca_template,out):
     g=metrics[metrics.vessel==vessel].copy()
-    score_col=f"{proximal_side}_origin_score"
-    picks=list(g.nlargest(4,score_col).view_index.astype(int))
-    med_idx=int((g[score_col]-g[score_col].median()).abs().idxmin())
-    med_view=int(g.loc[med_idx].view_index)
-    if med_view not in picks: picks.append(med_view)
-    picks=picks[:5]
+    allowed={}
+    for _,t in rca_template[rca_template.usable_for_orientation].iterrows():
+        allowed[int(t.angle_index)]=t.rca_proximal_end
+    scored=[]
+    for _,r in g.iterrows():
+        side=allowed.get(int(r.angle_index))
+        if not side:
+            continue
+        scored.append((float(r[f"{side}_origin_score"]),int(r.view_index),side))
+    scored=sorted(scored,reverse=True)
+    picks=scored[:5]
+    if not picks:
+        return
     fig,axes=plt.subplots(1,len(picks),figsize=(4*len(picks),4))
     if len(picks)==1: axes=[axes]
-    for ax,idx in zip(axes,picks):
+    for ax,(score,idx,side) in zip(axes,picks):
         arr=stack[idx]; row=g[g.view_index==idx].iloc[0]; vmin,vmax=_display_limits(arr)
         ax.imshow(arr,cmap="gray",vmin=vmin,vmax=vmax)
-        c=int(row.center_coordinate_px)
+        cc=int(row.center_coordinate_px)
         if row.analysis_axis=="horizontal":
-            ax.axhline(c,linewidth=.8)
+            ax.axhline(cc,linewidth=.8)
         else:
-            ax.axvline(c,linewidth=.8)
-        ax.set_title(f"{vessel} view {idx}\n{score_col}={row[score_col]:.2f}")
+            ax.axvline(cc,linewidth=.8)
+        ax.set_title(f"{vessel} view {idx} | axis={row.analysis_axis}\nRCA-oriented {side} score={score:.2f}")
         ax.axis("off")
-    fig.suptitle(f"{vessel} Q3D most informative radial views | RCA-calibrated proximal side={proximal_side}")
+    fig.suptitle(f"{vessel} Q3D informative views | per-angle RCA orientation")
     fig.tight_layout(); fig.savefig(out,dpi=170); plt.close(fig)
 
-
-def plot_profiles(profiles,proximal_side,out):
+def plot_profiles(profiles,out):
     fig,ax=plt.subplots(figsize=(10,5))
     for vessel,(w,_) in profiles.items():
         x=np.arange(len(w))
         ax.plot(x,w,label=vessel)
-    ax.set_xlabel(f"Pixels from RCA-calibrated proximal side ({proximal_side})")
+    ax.set_xlabel("Pixels from per-angle RCA-calibrated proximal end")
     ax.set_ylabel("Median normalized bright width")
-    ax.set_title("Q3D median proximal width profiles")
+    ax.set_title("Q3D median RCA-oriented proximal width profiles")
     ax.legend()
     fig.tight_layout(); fig.savefig(out,dpi=170); plt.close(fig)
 
@@ -750,15 +763,26 @@ def run(dicom_root="/content/drive/MyDrive/CCTA/DICOM/3221",drive_root="/content
 
     renderer_axis,views=analyze_views(arrays_by)
     views.to_csv(out/"q3d_view_metrics.csv",index=False)
-    signatures,decision=summarize_origin_signatures(views,renderer_axis)
+
+    pair_pixels=paired_view_pixel_reproducibility(arrays_by)
+    pair_pixels.to_csv(out/"q3d_paired_view_reproducibility.csv",index=False)
+
+    rca_template=build_rca_angle_template(views)
+    rca_template.to_csv(out/"q3d_rca_angle_orientation_template.csv",index=False)
+
+    signatures,decision=summarize_origin_signatures(views,renderer_axis,rca_template)
     signatures.to_csv(out/"q3d_origin_signatures.csv",index=False)
 
-    profiles,corr=proximal_profile_similarity(arrays_by,views,decision["rca_proximal_side"])
+    profiles,corr=proximal_profile_similarity(arrays_by,views,rca_template)
     decision["LAD_CX_proximal_profile_correlation"]=corr
+    decision["paired_pixel_correlation_median_by_vessel"]={
+        vessel:float(pair_pixels[pair_pixels.vessel==vessel].pixel_correlation.median())
+        for vessel in ("RCA","LAD","CX")
+    }
 
     for vessel in ("RCA","LAD","CX"):
-        plot_montage(vessel,arrays_by[vessel],views,decision["rca_proximal_side"],out/f"QC_{vessel}_q3d_informative_views.png")
-    plot_profiles(profiles,decision["rca_proximal_side"],out/"01_q3d_proximal_width_profiles.png")
+        plot_montage(vessel,arrays_by[vessel],views,rca_template,out/f"QC_{vessel}_q3d_informative_views.png")
+    plot_profiles(profiles,out/"01_q3d_proximal_width_profiles.png")
 
     direct_geom={}
     for vessel in ("RCA","LAD","CX"):
@@ -775,15 +799,29 @@ def run(dicom_root="/content/drive/MyDrive/CCTA/DICOM/3221",drive_root="/content
         "baseline_commit":BASELINE,
         "series":SERIES,
         "n_views_per_vessel":EXPECTED_FILES,
-        "renderer_axis":renderer_axis,
+        "renderer_axis_descriptive_only":renderer_axis,
+        "prespecified_adjudication_gates":{
+            "MIN_INFORMATIVE_ORIGIN_SCORE":MIN_INFORMATIVE_ORIGIN_SCORE,
+            "MIN_INFORMATIVE_SCORE_MARGIN":MIN_INFORMATIVE_SCORE_MARGIN,
+            "MIN_RCA_INFORMATIVE_ANGLE_PAIRS":MIN_RCA_INFORMATIVE_ANGLE_PAIRS,
+            "MIN_RCA_PAIR_SIDE_REPRODUCIBILITY":MIN_RCA_PAIR_SIDE_REPRODUCIBILITY,
+            "MIN_RCA_PROX_DISTAL_RATIO":MIN_RCA_PROX_DISTAL_RATIO,
+            "MIN_TARGET_VALID_ANGLES":MIN_TARGET_VALID_ANGLES,
+            "MIN_TARGET_SIDE_CONSISTENCY":MIN_TARGET_SIDE_CONSISTENCY,
+            "MIN_TARGET_PROX_DISTAL_RATIO":MIN_TARGET_PROX_DISTAL_RATIO,
+            "MIN_TARGET_RCA_CALIBRATED_INDEX":MIN_TARGET_RCA_CALIBRATED_INDEX,
+            "PAIR_OFFSET":PAIR_OFFSET,
+        },
         "decision":decision,
         "origin_signatures":signatures.to_dict("records"),
         "direct_geometry":direct_geom,
         "scientific_boundary":(
             "Vendor Q3D is same-exam derived evidence, not an independent acquisition. "
-            "The 24 files are treated as radial curved views, not a physical 3-D stack. "
-            "Pixel-space origin signatures are calibrated to the RCA positive control. "
-            "No clinical LM/LCX/OM identity is established and the frozen master is not modified."
+            "The 24 files are radial curved views, not a physical 3-D stack. "
+            "Version 1.1 analyzes each view along its own detected vessel axis and uses repeated "
+            "RCA angle pairs (i and i+12) to establish a reproducible proximal-end orientation "
+            "before corresponding LAD/CX angles are evaluated. No clinical LM/LCX/OM identity "
+            "is established and the frozen master is not modified."
         ),
         "clinical_LM_identity_established":False,
         "clinical_LCX_OM_identity_established":False,
@@ -792,13 +830,15 @@ def run(dicom_root="/content/drive/MyDrive/CCTA/DICOM/3221",drive_root="/content
     _write_json(out/"decision.json",decision)
     _write_json(out/"summary.json",summary)
 
-    report=out/"OPENPLAQUE_VENDOR_Q3D_PROXIMAL_ORIGIN_AUDIT_V1_REPORT.html"
+    report=out/"OPENPLAQUE_VENDOR_Q3D_PROXIMAL_ORIGIN_AUDIT_V1_1_REPORT.html"
     report.write_text(
-        "<html><body><h1>OpenPlaque Vendor Q3D Proximal Origin Audit v1</h1>"
+        "<html><body><h1>OpenPlaque Vendor Q3D Proximal Origin Audit v1.1</h1>"
         f"<p><b>Status:</b> {decision['status']}</p>"
-        "<p>RCA 1035 is the positive control; LAD 1043 and CX 1039 are target curved/radial Q3D series.</p>"
-        "<p>The 24 files per vessel are not treated as a 3-D stack.</p>"
+        "<p>Each radial view is analyzed along its own detected vessel axis. "
+        "RCA repeated angle pairs establish the allowed proximal-end orientation.</p>"
         "<h2>Origin signatures</h2>"+signatures.to_html(index=False)+
+        "<h2>RCA angle orientation template</h2>"+rca_template.to_html(index=False)+
+        "<h2>Paired-view pixel reproducibility</h2>"+pair_pixels.to_html(index=False)+
         "<h2>DICOM geometry summary</h2>"+pd.DataFrame([
             {"vessel":k,**v} for k,v in direct_geom.items()
         ]).to_html(index=False)+
@@ -808,13 +848,12 @@ def run(dicom_root="/content/drive/MyDrive/CCTA/DICOM/3221",drive_root="/content
     )
 
     _write_json(out/"run_state.json",{"status":"COMPLETE","algorithm":ALGORITHM,"result_status":decision["status"]})
-    archive=out/"OPENPLAQUE_VENDOR_Q3D_PROXIMAL_ORIGIN_AUDIT_V1_RESULTS.zip"
+    archive=out/"OPENPLAQUE_VENDOR_Q3D_PROXIMAL_ORIGIN_AUDIT_V1_1_RESULTS.zip"
     with zipfile.ZipFile(archive,"w",zipfile.ZIP_DEFLATED) as z:
         for p in out.iterdir():
             if p.is_file() and p!=archive:
                 z.write(p,p.name)
     return summary
-
 
 def synthetic_self_test():
     arr=np.full((512,512),-100.0,np.float32)
