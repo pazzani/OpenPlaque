@@ -66,3 +66,16 @@ The final notebook:
 - displays every figure inline;
 - writes PNG, CSV, NPZ, JSON and HTML outputs;
 - exports the entire output directory to one ZIP.
+
+
+## RCA endpoint convention correction
+
+The locked RCA research PCAT endpoint is the fat-voxel-weighted result over the forty one-mm longitudinal bins:
+
+- [10,11), [11,12), ..., [49,50) mm.
+
+The broader canonical shell sampler also contains voxels assigned exactly to the 50.0-mm endpoint station. Those endpoint-cap voxels are not represented in the forty locked longitudinal bins.
+
+For the voxel-level decomposition, RCA therefore uses the same half-open **[10,50) mm** convention as the locked research endpoint. This excludes the endpoint-cap population and reproduces the locked RCA total of 57,783 fat voxels and its locked weighted mean, rather than the broader 63,794-voxel whole-shell sampler.
+
+The RCA radial QC plot in v2 is recomputed from that same locked [10,50) voxel population so all inflammation visualizations share one endpoint definition.
