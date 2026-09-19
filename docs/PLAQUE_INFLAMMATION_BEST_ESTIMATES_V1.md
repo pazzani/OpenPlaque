@@ -82,3 +82,8 @@ References:
 ## Research interpretation
 
 This endpoint is designed for transparent comparison and longitudinal OpenPlaque research. It is not a diagnostic report and should not be represented as output from Cleerly, Caristo, or any FDA-cleared commercial platform.
+
+
+### LM and aggregate NCPV handling
+
+The left-main 54 mm3 anchor is calcium-only. LM LAP and NCPV are therefore reported as NA, not zero. The aggregate NCPV and LAP fields are explicitly named **known lower** values from LAD/RCA/LCX; missing LM noncalcified plaque and incompletely measured side branches are not silently treated as absent.
