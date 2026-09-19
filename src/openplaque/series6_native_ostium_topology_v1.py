@@ -324,7 +324,16 @@ def analyze(native_aorta_path,cached_prediction_path,drive_root="/content/drive/
             c=np.array([r.centroid_native_x_mm,r.centroid_native_y_mm,r.centroid_native_z_mm]); sep=float(np.linalg.norm(c-rc))
             if sep>=MIN_SECOND_CONTACT_SEPARATION_MM:
                 d=r.to_dict(); d["separation_from_RCA_contact_mm"]=sep; second.append(d)
-    pd.DataFrame(second).to_csv(out/"native_second_contact_candidates.csv",index=False)
+    second_columns = [
+        "contact_cluster","contact_voxels","component","component_voxels",
+        "centroid_native_x_mm","centroid_native_y_mm","centroid_native_z_mm",
+        "centroid_series7_x_mm","centroid_series7_y_mm","centroid_series7_z_mm",
+        "distance_to_native_RCA_root_mm","distance_to_native_left_anchor_mm",
+        "separation_from_RCA_contact_mm",
+    ]
+    pd.DataFrame(second, columns=second_columns).to_csv(
+        out/"native_second_contact_candidates.csv", index=False
+    )
     comps=sorted(set(int(x) for x in contacts.component.tolist() if int(x)>0)) if not contacts.empty else []
     arows=[]
     for cid in comps:
