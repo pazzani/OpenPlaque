@@ -23,7 +23,6 @@ RCA_CL=Path("PCAT_RCA_10_50/rca_centerline_smoothed_zyx.csv")
 RCA_RAD=Path("PCAT_RCA_10_50/pcat_local_radius_profile.csv")
 RCA_LOCK_SUMMARY=Path("RCA_Plaque_PCAT_Research_Lock_v1/summary.json")
 RCA_LONG=Path("RCA_Plaque_PCAT_Research_Lock_v1/RCA_locked_research_plaque_PCAT_profile_10_50.csv")
-RCA_RADIAL=Path("PCAT_RCA_10_50_Reproducibility_Lock/pcat_canonical_primary_radial.csv")
 
 LAD_GEOM=Path("LAD_Source_Space_PCAT_Feasibility_v1/LAD_PCAT_source_geometry.csv")
 LAD_SUMMARY=Path("LAD_Source_Space_PCAT_Feasibility_v1/summary.json")
@@ -176,15 +175,28 @@ def _rca_voxels(root,src,aorta,geom):
     dist,idx=tree.query(gmm,k=1,workers=-1)
     hu=crop.reshape(-1).astype(float)
     af=aorta[lo[0]:hi[0],lo[1]:hi[1],lo[2]:hi[2]].reshape(-1)
+    nearest_arc=arcs[idx]
     outer=radii[idx]+WALL_MARGIN_MM
-    shell=(dist>outer)&(dist<=3.0*outer)&(arcs[idx]>=RCA_RANGE[0])&(arcs[idx]<=RCA_RANGE[1])&(~af)
+    # IMPORTANT: the locked research endpoint is defined by the 40 one-mm
+    # longitudinal bins [10,11), ... [49,50).  The canonical whole-shell
+    # sampler also contains voxels assigned exactly to the 50-mm endpoint
+    # station; those endpoint-cap voxels are intentionally excluded here.
+    shell=(
+        (dist>outer)
+        &(dist<=3.0*outer)
+        &(nearest_arc>=RCA_RANGE[0])
+        &(nearest_arc<RCA_RANGE[1])
+        &(~af)
+    )
     fat=shell&(hu>=FAT_RANGE[0])&(hu<=FAT_RANGE[1])
     vals=hu[fat]
+    radial_out=(dist-outer)[fat]
     return vals,{
         "arc_start_mm":RCA_RANGE[0],"arc_end_mm":RCA_RANGE[1],
         "station_count":int(len(arcs)),"fat_voxels":int(len(vals)),
-        "pcat_mean_hu":float(vals.mean()),"pcat_median_hu":float(np.median(vals)),"pcat_sd_hu":float(vals.std())
-    }
+        "pcat_mean_hu":float(vals.mean()),"pcat_median_hu":float(np.median(vals)),"pcat_sd_hu":float(vals.std()),
+        "endpoint_convention":"half-open [10,50) mm to match locked 40-bin research endpoint"
+    },radial_out
 
 
 def _lad_segment(root):
@@ -224,7 +236,7 @@ def compute_voxel_distributions(root):
     aorta=_load_aorta(root,src,geom)
     vals={}
     meta={}
-    vals["RCA"],meta["RCA"]=_rca_voxels(root,src,aorta,geom)
+    vals["RCA"],meta["RCA"],rca_radial_out=_rca_voxels(root,src,aorta,geom)
     lad=_lad_segment(root)
     vals["LAD"],meta["LAD"]=_generic_lps_voxels(geom,src,aorta,lad,"frozen_arc_mm","lumen_radius_median_mm")
     lcx=_lcx_segment(root)
@@ -253,7 +265,8 @@ def compute_voxel_distributions(root):
     validation=pd.DataFrame(rows)
     if not validation.voxel_distribution_validation_pass.all():
         raise RuntimeError("Voxel-level PCAT reconstruction failed validation against locked endpoints:\n"+validation.to_string(index=False))
-    return vals,validation,expected
+    extras={"RCA_radial_out_mm":rca_radial_out}
+    return vals,validation,expected,extras
 
 
 def build_voxel_bands(vals):
@@ -389,23 +402,33 @@ def _longitudinal(root,out):
     return p1,p2,dfs
 
 
-def _radial(root,out):
-    d=pd.read_csv(_req(root/RCA_RADIAL))
-    for c in ("radial_start_mm","radial_end_mm","fat_voxels","mean_hu"):
-        d[c]=pd.to_numeric(d[c],errors="coerce")
-    d=d[np.isfinite(d.mean_hu)].copy()
-    mid=(d.radial_start_mm+d.radial_end_mm)/2
+def _radial_locked(rca_vals,radial_out,out):
+    vals=np.asarray(rca_vals,float)
+    radial_out=np.asarray(radial_out,float)
+    rows=[]
+    for b in np.arange(0.0,6.0,0.5):
+        m=(radial_out>=b)&(radial_out<b+0.5)
+        v=vals[m]
+        rows.append({
+            "radial_start_mm":float(b),
+            "radial_end_mm":float(b+0.5),
+            "fat_voxels":int(len(v)),
+            "mean_hu":float(np.mean(v)) if len(v) else np.nan,
+        })
+    d=pd.DataFrame(rows)
+    q=d[np.isfinite(d.mean_hu)].copy()
+    mid=(q.radial_start_mm+q.radial_end_mm)/2
     fig,ax=plt.subplots(figsize=(8.5,5))
-    ax.plot(mid,d.mean_hu,marker="o")
-    ax.set_xlabel("Distance outward from modeled RCA interface (mm)"); ax.set_ylabel("PCAT mean HU")
-    ax.set_title("RCA radial PCAT gradient — exploratory geometry QC")
+    ax.plot(mid,q.mean_hu,marker="o")
+    ax.set_xlabel("Distance outward from modeled RCA interface (mm)")
+    ax.set_ylabel("PCAT mean HU")
+    ax.set_title("Locked RCA radial PCAT gradient — exploratory geometry QC")
     ax.grid(alpha=.15)
-    ax.text(.02,.02,"Descriptive only; do not interpret this radial direction as a validated clinical gradient.",
+    ax.text(.02,.02,"Uses the same half-open [10,50) mm voxel population as the locked RCA endpoint.\nDescriptive only; not a validated clinical inflammation gradient.",
             transform=ax.transAxes,fontsize=9,va="bottom")
     p=out/"07_rca_radial_pcat_gradient_descriptive.png"
     fig.tight_layout(); fig.savefig(p,dpi=200,bbox_inches="tight"); plt.close(fig)
     return p,d
-
 
 def _report(out,plaque,aggregate,infl,validation,bands):
     imgs=[
@@ -453,7 +476,7 @@ def run(drive_root="/content/drive/MyDrive/OpenPlaque",output_dir=None):
     aggregate=pd.read_csv(endpoint/"major_vessel_aggregate.csv")
     infl=pd.read_csv(endpoint/"inflammation_best_estimates_by_vessel.csv")
 
-    vals,validation,expected=compute_voxel_distributions(root)
+    vals,validation,expected,extras=compute_voxel_distributions(root)
     validation.to_csv(out/"pcat_voxel_reconstruction_validation.csv",index=False)
     bands=build_voxel_bands(vals)
     bands.to_csv(out/"pcat_voxel_hu_band_decomposition.csv",index=False)
@@ -465,7 +488,7 @@ def run(drive_root="/content/drive/MyDrive/OpenPlaque",output_dir=None):
     figures.append(_voxel_band_chart(bands,out))
     figures.append(_voxel_histogram(vals,out))
     p1,p2,longitudinal=_longitudinal(root,out); figures.extend([p1,p2])
-    p3,radial=_radial(root,out); figures.append(p3)
+    p3,radial=_radial_locked(vals["RCA"],extras["RCA_radial_out_mm"],out); figures.append(p3)
 
     all_long=[]
     for v,d in longitudinal.items():
@@ -483,6 +506,7 @@ def run(drive_root="/content/drive/MyDrive/OpenPlaque",output_dir=None):
             "plaque":"OpenPlaque research best-estimate proxy; not Cleerly output.",
             "pcat":"Direct -190 to -30 HU PCAT; not proprietary Caristo FAI-Score.",
             "voxel_bands":"True source-space PCAT fat-voxel HU distribution; descriptive attenuation bands, not histology.",
+            "rca_endpoint_convention":"Half-open [10,50) mm, matching the locked 40 longitudinal one-mm bins and excluding endpoint-cap voxels assigned exactly to 50 mm.",
             "lm":"LM plaque 54 mm3 is calcium anchor; LM inflammation not standardized.",
             "lcx":"C6 LCX-like structural parent used as current low-confidence clinical-LCX proxy."
         }
