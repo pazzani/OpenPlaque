@@ -16,8 +16,8 @@ import pydicom
 from scipy import ndimage as ndi
 
 BASELINE = "0593b453959f5a353d644267fbeef24b514ef4d7"
-ALGORITHM = "vendor-q3d-proximal-origin-audit-v1.0"
-OUTPUT_DIRNAME = "Vendor_Q3D_Proximal_Origin_Audit_v1"
+ALGORITHM = "vendor-q3d-proximal-origin-audit-v1.1"
+OUTPUT_DIRNAME = "Vendor_Q3D_Proximal_Origin_Audit_v1_1"
 
 SERIES = {
     "RCA": {"number": 1035, "folder": "32218", "description": "RCA Curved Range Radial Q3D(MT)"},
@@ -34,6 +34,12 @@ MIN_RCA_PROX_DISTAL_RATIO = 1.20
 MIN_TARGET_SIDE_CONSISTENCY = 0.60
 MIN_TARGET_PROX_DISTAL_RATIO = 1.10
 MIN_TARGET_RCA_CALIBRATED_INDEX = 0.50
+MIN_INFORMATIVE_ORIGIN_SCORE = 0.50
+MIN_INFORMATIVE_SCORE_MARGIN = 0.25
+MIN_RCA_INFORMATIVE_ANGLE_PAIRS = 6
+MIN_RCA_PAIR_SIDE_REPRODUCIBILITY = 0.75
+MIN_TARGET_VALID_ANGLES = 6
+PAIR_OFFSET = 12
 END_FRACTION = 0.18
 CENTER_SEARCH_HALF = 110
 WIDTH_HALF = 90
@@ -433,6 +439,7 @@ def view_metrics(arr, forced_axis=None):
 
 
 def analyze_views(arrays_by_vessel):
+    """Measure every view along its own detected longitudinal vessel axis."""
     prelim=[]
     for vessel,stack in arrays_by_vessel.items():
         for i,arr in enumerate(stack):
@@ -444,10 +451,14 @@ def analyze_views(arrays_by_vessel):
     rows=[]
     for vessel,stack in arrays_by_vessel.items():
         for i,arr in enumerate(stack):
-            m=view_metrics(arr,forced_axis=renderer_axis)
+            m=view_metrics(arr)  # critical v1.1 fix: no forced global axis
+            left=float(m["left"]["origin_score"])
+            right=float(m["right"]["origin_score"])
             rows.append({
                 "vessel":vessel,
                 "view_index":i,
+                "angle_index":i % PAIR_OFFSET,
+                "repeat_index":i // PAIR_OFFSET,
                 "detected_axis":m["detected_axis"],
                 "analysis_axis":m["analysis_axis"],
                 "axis_agrees_with_renderer":m["detected_axis"]==renderer_axis,
@@ -457,47 +468,157 @@ def analyze_views(arrays_by_vessel):
                 "vertical_axis_score":m["vertical_axis_score"],
                 "center_coordinate_px":m["center_coordinate_px"],
                 "baseline_width_px":m["baseline_width_px"],
+                "view_informative":bool(
+                    max(left,right)>=MIN_INFORMATIVE_ORIGIN_SCORE
+                    and abs(left-right)>=MIN_INFORMATIVE_SCORE_MARGIN
+                ),
+                "dominant_end":"left" if left>=right else "right",
+                "origin_score_margin":abs(left-right),
                 **{f"left_{k}":v for k,v in m["left"].items()},
                 **{f"right_{k}":v for k,v in m["right"].items()},
             })
     return renderer_axis,pd.DataFrame(rows)
 
 
-def summarize_origin_signatures(view_df, renderer_axis):
-    rca=view_df[view_df.vessel=="RCA"].copy()
-    left_med=float(rca.left_origin_score.median())
-    right_med=float(rca.right_origin_score.median())
-    proximal_side="left" if left_med>=right_med else "right"
-    distal_side="right" if proximal_side=="left" else "left"
-
-    rca_consistency=float((rca[f"{proximal_side}_origin_score"] > rca[f"{distal_side}_origin_score"]).mean())
-    rca_prox=float(rca[f"{proximal_side}_origin_score"].median())
-    rca_dist=float(rca[f"{distal_side}_origin_score"].median())
-    rca_ratio=float(rca_prox/max(rca_dist,1e-6))
-    rca_control=bool(rca_consistency>=MIN_RCA_SIDE_CONSISTENCY and rca_ratio>=MIN_RCA_PROX_DISTAL_RATIO)
-
-    denom=max(rca_prox-rca_dist,1e-6)
+def paired_view_pixel_reproducibility(arrays_by_vessel):
     rows=[]
+    for vessel,stack in arrays_by_vessel.items():
+        for angle in range(PAIR_OFFSET):
+            a=np.asarray(stack[angle],float).ravel()
+            b=np.asarray(stack[angle+PAIR_OFFSET],float).ravel()
+            ok=np.isfinite(a)&np.isfinite(b)
+            if ok.sum()>10 and np.std(a[ok])>0 and np.std(b[ok])>0:
+                corr=float(np.corrcoef(a[ok],b[ok])[0,1])
+            else:
+                corr=np.nan
+            mad=float(np.nanmedian(np.abs(a-b)))
+            rows.append({
+                "vessel":vessel,
+                "angle_index":angle,
+                "view_a":angle,
+                "view_b":angle+PAIR_OFFSET,
+                "pixel_correlation":corr,
+                "median_absolute_pixel_difference":mad,
+            })
+    return pd.DataFrame(rows)
+
+
+def build_rca_angle_template(view_df):
+    rca=view_df[view_df.vessel=="RCA"].set_index("view_index")
+    rows=[]
+    for angle in range(PAIR_OFFSET):
+        ia,ib=angle,angle+PAIR_OFFSET
+        a=rca.loc[ia]; b=rca.loc[ib]
+        both=bool(a.view_informative and b.view_informative)
+        same=bool(a.dominant_end==b.dominant_end) if both else False
+        rows.append({
+            "angle_index":angle,
+            "view_a":ia,
+            "view_b":ib,
+            "view_a_axis":a.analysis_axis,
+            "view_b_axis":b.analysis_axis,
+            "view_a_informative":bool(a.view_informative),
+            "view_b_informative":bool(b.view_informative),
+            "view_a_dominant_end":a.dominant_end,
+            "view_b_dominant_end":b.dominant_end,
+            "both_informative":both,
+            "side_reproducible":same,
+            "usable_for_orientation":bool(both and same),
+            "rca_proximal_end":a.dominant_end if both and same else "",
+            "view_a_left_score":float(a.left_origin_score),
+            "view_a_right_score":float(a.right_origin_score),
+            "view_b_left_score":float(b.left_origin_score),
+            "view_b_right_score":float(b.right_origin_score),
+        })
+    return pd.DataFrame(rows)
+
+
+def summarize_origin_signatures(view_df, renderer_axis, rca_template):
+    candidate=rca_template[rca_template.both_informative]
+    usable=rca_template[rca_template.usable_for_orientation]
+    pair_repro=float(len(usable)/len(candidate)) if len(candidate) else 0.0
+
+    rca_prox_vals=[]; rca_dist_vals=[]
+    for _,t in usable.iterrows():
+        side=t.rca_proximal_end
+        other="right" if side=="left" else "left"
+        for idx in (int(t.view_a),int(t.view_b)):
+            r=view_df[(view_df.vessel=="RCA")&(view_df.view_index==idx)].iloc[0]
+            rca_prox_vals.append(float(r[f"{side}_origin_score"]))
+            rca_dist_vals.append(float(r[f"{other}_origin_score"]))
+    rca_prox=float(np.median(rca_prox_vals)) if rca_prox_vals else np.nan
+    rca_dist=float(np.median(rca_dist_vals)) if rca_dist_vals else np.nan
+    rca_ratio=float(rca_prox/max(rca_dist,1e-6)) if np.isfinite(rca_prox) and np.isfinite(rca_dist) else np.nan
+    rca_control=bool(
+        len(usable)>=MIN_RCA_INFORMATIVE_ANGLE_PAIRS
+        and pair_repro>=MIN_RCA_PAIR_SIDE_REPRODUCIBILITY
+        and np.isfinite(rca_ratio)
+        and rca_ratio>=MIN_RCA_PROX_DISTAL_RATIO
+    )
+
+    denom=max(rca_prox-rca_dist,1e-6) if np.isfinite(rca_prox) and np.isfinite(rca_dist) else np.nan
+    rows=[{
+        "vessel":"RCA",
+        "renderer_axis":renderer_axis,
+        "informative_angle_pairs":int(len(candidate)),
+        "valid_oriented_angles":int(len(usable)),
+        "paired_side_reproducibility":pair_repro,
+        "proximal_side_consistency":pair_repro,
+        "median_proximal_origin_score":rca_prox,
+        "median_distal_origin_score":rca_dist,
+        "proximal_distal_ratio":rca_ratio,
+        "rca_calibrated_origin_index":1.0,
+        "origin_signature_positive":rca_control,
+    }]
     target_positive={}
-    for vessel in ("RCA","LAD","CX"):
-        g=view_df[view_df.vessel==vessel]
-        prox=g[f"{proximal_side}_origin_score"]
-        dist=g[f"{distal_side}_origin_score"]
-        consistency=float((prox>dist).mean())
-        p=float(prox.median()); d=float(dist.median())
-        ratio=float(p/max(d,1e-6))
-        calibrated=float((p-rca_dist)/denom)
-        positive = True if vessel=="RCA" else bool(
+
+    for vessel in ("LAD","CX"):
+        g=view_df[view_df.vessel==vessel].set_index("view_index")
+        angle_rows=[]
+        prox_all=[]; dist_all=[]
+        for _,t in usable.iterrows():
+            angle=int(t.angle_index); side=t.rca_proximal_end
+            other="right" if side=="left" else "left"
+            vals=[]
+            for idx in (angle,angle+PAIR_OFFSET):
+                r=g.loc[idx]
+                if max(float(r.left_origin_score),float(r.right_origin_score)) < MIN_INFORMATIVE_ORIGIN_SCORE:
+                    continue
+                p=float(r[f"{side}_origin_score"]); d=float(r[f"{other}_origin_score"])
+                vals.append((p,d))
+            if len(vals)<2:
+                continue
+            ps=[x[0] for x in vals]; ds=[x[1] for x in vals]
+            pmed=float(np.median(ps)); dmed=float(np.median(ds))
+            prox_all.extend(ps); dist_all.extend(ds)
+            angle_rows.append({
+                "angle_index":angle,
+                "vessel":vessel,
+                "rca_proximal_end":side,
+                "pair_proximal_score":pmed,
+                "pair_distal_score":dmed,
+                "pair_supports_rca_orientation":bool(pmed>dmed),
+            })
+        valid=len(angle_rows)
+        consistency=float(np.mean([x["pair_supports_rca_orientation"] for x in angle_rows])) if valid else 0.0
+        p=float(np.median(prox_all)) if prox_all else np.nan
+        d=float(np.median(dist_all)) if dist_all else np.nan
+        ratio=float(p/max(d,1e-6)) if np.isfinite(p) and np.isfinite(d) else np.nan
+        calibrated=float((p-rca_dist)/denom) if np.isfinite(p) and np.isfinite(denom) else np.nan
+        positive=bool(
             rca_control
+            and valid>=MIN_TARGET_VALID_ANGLES
             and consistency>=MIN_TARGET_SIDE_CONSISTENCY
-            and ratio>=MIN_TARGET_PROX_DISTAL_RATIO
-            and calibrated>=MIN_TARGET_RCA_CALIBRATED_INDEX
+            and np.isfinite(ratio) and ratio>=MIN_TARGET_PROX_DISTAL_RATIO
+            and np.isfinite(calibrated) and calibrated>=MIN_TARGET_RCA_CALIBRATED_INDEX
         )
-        if vessel!="RCA": target_positive[vessel]=positive
+        target_positive[vessel]=positive
         rows.append({
             "vessel":vessel,
             "renderer_axis":renderer_axis,
-            "rca_calibrated_proximal_side":proximal_side,
+            "informative_angle_pairs":valid,
+            "valid_oriented_angles":valid,
+            "paired_side_reproducibility":consistency,
             "proximal_side_consistency":consistency,
             "median_proximal_origin_score":p,
             "median_distal_origin_score":d,
@@ -519,15 +640,16 @@ def summarize_origin_signatures(view_df, renderer_axis):
 
     return pd.DataFrame(rows),{
         "status":status,
-        "renderer_axis":renderer_axis,
+        "renderer_axis_descriptive_only":renderer_axis,
+        "per_view_axis_analysis":True,
         "rca_control_pass":rca_control,
-        "rca_proximal_side":proximal_side,
-        "rca_proximal_side_consistency":rca_consistency,
+        "rca_candidate_informative_angle_pairs":int(len(candidate)),
+        "rca_valid_oriented_angle_pairs":int(len(usable)),
+        "rca_pair_side_reproducibility":pair_repro,
         "rca_proximal_distal_ratio":rca_ratio,
         "LAD_origin_signature_positive":bool(target_positive.get("LAD",False)),
         "CX_origin_signature_positive":bool(target_positive.get("CX",False)),
     }
-
 
 def _profile_for_view(arr,axis,center,threshold):
     mask=arr>=threshold
