@@ -67,3 +67,27 @@ The LAD-vs-CX proximal profile correlation is descriptive only.
 - Q3D_RCA_ORIGIN_CONTROL_FAILED
 
 Even a positive left signature does not establish clinical LM/LCX/OM identity. The frozen master is never modified.
+
+
+## v1.1 adjudication correction
+
+The first completed run forced every Q3D image onto one global renderer axis. This caused a false RCA-control failure because several radial rotations were horizontal but were measured vertically.
+
+Version 1.1 corrects that implementation error without changing the underlying image thresholding or origin-score definition.
+
+Changes:
+
+- every radial image is measured along its own automatically detected vessel axis
+- images with max end-origin score < 0.50 or end-score margin < 0.25 are uninformative rather than negative
+- views i and i+12 are treated as repeated radial-angle pairs
+- an RCA angle is allowed to orient LAD/CX only when both repeated RCA views are informative and agree on which image end is proximal
+- at least 6 valid RCA angle pairs are required
+- RCA repeated-pair side reproducibility must be >= 0.75
+- corresponding LAD/CX angles are evaluated using the fixed RCA-derived proximal end
+- at least 6 target angles are required
+- paired raw-pixel correlations are reported as a descriptive repeatability check
+
+The output folder is separated from the original run:
+`Vendor_Q3D_Proximal_Origin_Audit_v1_1`.
+
+This remains same-exam vendor-derived evidence only. It cannot establish clinical LM/LCX/OM identity by itself.
