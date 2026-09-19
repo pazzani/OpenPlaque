@@ -79,3 +79,29 @@ The broader canonical shell sampler also contains voxels assigned exactly to the
 For the voxel-level decomposition, RCA therefore uses the same half-open **[10,50) mm** convention as the locked research endpoint. This excludes the endpoint-cap population and reproduces the locked RCA total of 57,783 fat voxels and its locked weighted mean, rather than the broader 63,794-voxel whole-shell sampler.
 
 The RCA radial QC plot in v2 is recomputed from that same locked [10,50) voxel population so all inflammation visualizations share one endpoint definition.
+
+
+## v2.2 cache controls
+
+The Run-all Colab exposes four user-facing Boolean controls:
+
+- `USE_CACHED_ENDPOINT_VALUES`
+  - True: reuse the consolidated plaque/inflammation endpoint tables in the current output folder when the cache is complete and readable.
+  - False: force regeneration of the endpoint tables from the established upstream Drive caches.
+  - If True but the cache is missing or unreadable, the notebook automatically recomputes it.
+
+- `USE_CACHED_PCAT_VOXELS`
+  - True: reuse the cached source-space RCA/LAD/LCX PCAT voxel arrays and RCA radial-distance array when available.
+  - Cached voxel arrays are always revalidated against the locked endpoint means and fat-voxel counts before reuse.
+  - False: force source-space CT reconstruction of the PCAT voxel populations.
+  - If True but the cache is missing, corrupt, or fails validation, the notebook automatically recomputes and refreshes it.
+
+- `DISPLAY_FIGURES`
+  - True: display all final PNG figures inline in Colab.
+  - False: skip inline display; figures are still regenerated and written to Drive.
+
+- `EXPORT_ZIP`
+  - True: package all output files and the endpoint subfolder into one ZIP.
+  - False: do not create the ZIP.
+
+Figures are always regenerated from the selected cached or recomputed numerical values. This prevents stale figures from being silently reused after a data-stage recomputation.
