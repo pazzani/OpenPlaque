@@ -107,7 +107,9 @@ def _plaque_chart(plaque,out):
             ax.text(i,t+max(totals)*.012,f"Total {t:.1f}{suffix}",ha="center",va="bottom",fontweight="bold")
     ax.set_xticks(x,order); ax.set_xlabel("Artery"); ax.set_ylabel("Plaque volume (mm³)")
     ax.set_title("Best-estimate plaque composition by artery")
-    ax.grid(axis="y",alpha=.15); ax.spines[["top","right"]].set_visible(False)
+    ax.grid(axis="y",alpha=.15)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
     lg.text(0,1,"Plaque attenuation category\n(HU threshold and descriptive interpretation)",va="top",fontsize=14,fontweight="bold")
     y=.86
     notes=[
