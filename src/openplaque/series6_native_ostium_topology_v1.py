@@ -168,11 +168,20 @@ def load_series6(folder):
     return img,arr,g,{"series_number":6,"series_description":str(first.SeriesDescription),"n_slices":524,"spacing_xyz_mm":[sx,sy,sz]}
 
 
-def _write_nii(img,path):
+def _write_local_image(img,path):
+    """Write a large transient image with explicit uncompressed SimpleITK IO.
+
+    MetaImage (.mha) is used because it has already proved reliable for the
+    full 524x512x512 CCTA volume in Colab, unlike large NIfTI writes.
+    """
     path=Path(path); path.parent.mkdir(parents=True,exist_ok=True)
     w=sitk.ImageFileWriter(); w.SetFileName(str(path)); w.SetUseCompression(False); w.Execute(img)
     if not path.exists() or path.stat().st_size==0: raise RuntimeError(f"Failed writing {path}")
-    if tuple(sitk.ReadImage(str(path)).GetSize())!=tuple(img.GetSize()): raise RuntimeError("NIfTI readback mismatch")
+    chk=sitk.ReadImage(str(path))
+    if tuple(chk.GetSize())!=tuple(img.GetSize()): raise RuntimeError("Local image readback size mismatch")
+    if not np.allclose(chk.GetSpacing(),img.GetSpacing(),atol=1e-5): raise RuntimeError("Local image readback spacing mismatch")
+    if not np.allclose(chk.GetOrigin(),img.GetOrigin(),atol=1e-4): raise RuntimeError("Local image readback origin mismatch")
+    if not np.allclose(chk.GetDirection(),img.GetDirection(),atol=1e-5): raise RuntimeError("Local image readback direction mismatch")
     return path
 
 
@@ -232,8 +241,8 @@ def prepare(drive_root="/content/drive/MyDrive/OpenPlaque",dicom_root="/content/
     bright=_brightness(g6,s6arr,[lad,rca])
     if bright["path_coverage_fraction"]<.95 or bright["path_median_hu"]<150: raise RuntimeError(f"Series 6 source validation failed {bright}")
     tx,reg=register_root(ref,s6img,center); tf=local/"series7_to_series6_root_translation.tfm"; sitk.WriteTransform(tx,str(tf))
-    nii=_write_nii(s6img,local/"series6_native.img.nii")
-    prep={"algorithm":ALGORITHM,"baseline_commit":BASELINE,"series6_native_image":str(nii),"series6_metadata":meta,"series6_brightness":bright,
+    local_img=_write_local_image(s6img,local/"series6_native.img.mha")
+    prep={"algorithm":ALGORITHM,"baseline_commit":BASELINE,"series6_native_image":str(local_img),"series6_dicom_folder":str(Path(dicom_root)/SERIES6_FOLDER_NAME),"series6_metadata":meta,"series6_brightness":bright,
           "root_registration":reg,"root_transform_file":str(tf),"series7_rca_root_lps_mm":rca7.tolist(),"series7_left_anchor_lps_mm":left7.tolist(),
           "series6_expected_rca_root_lps_mm":list(tx.TransformPoint(tuple(rca7))),"series6_expected_left_anchor_lps_mm":list(tx.TransformPoint(tuple(left7))),
           "source_endpoint_aorta_distance_mm":{"RCA":rd,"LAD":ld}}
