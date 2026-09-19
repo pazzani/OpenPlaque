@@ -289,8 +289,14 @@ def _bright_threshold(arr):
         return 0.0, False
     if _hu_like(arr):
         return 150.0, True
-    p70, p85, p95 = np.percentile(finite, [70,85,95])
-    thr = max(p85, p70 + 0.35 * (p95 - p70))
+    # Q3D secondary images may be display-like rather than HU-like, and the
+    # contrasted vessel can occupy only a few percent of pixels. Use the upper
+    # tail rather than p85/p95 alone so sparse bright lumen is not swallowed by
+    # the background distribution.
+    p50, p90, p99 = np.percentile(finite, [50,90,99])
+    if p99 <= p50 + 1e-6:
+        return float(p99), False
+    thr = max(p90, p50 + 0.45 * (p99 - p50))
     return float(thr), False
 
 
