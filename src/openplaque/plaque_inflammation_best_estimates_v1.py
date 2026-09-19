@@ -139,8 +139,16 @@ def build_plaque_estimates(legacy: pd.DataFrame)->pd.DataFrame:
             }[vessel]
 
         # For the legacy four-bin classifier, Cleerly/CONFIRM2-like NCPV is
-        # reconstructed as all non-calcified bins below 350 HU.
-        ncpv=sum(v for v in (lap,nc30_130,mixed130_350) if np.isfinite(v))
+        # reconstructed as all non-calcified bins below 350 HU. LM is different:
+        # the 54 mm3 value is a calcium-only anchor, so LM noncalcified plaque is
+        # unknown rather than zero.
+        if vessel=="LM":
+            lap=np.nan
+            nc30_130=np.nan
+            mixed130_350=np.nan
+            ncpv=np.nan
+        else:
+            ncpv=sum(v for v in (lap,nc30_130,mixed130_350) if np.isfinite(v))
         rows.append({
             "vessel":vessel,
             "tpv_best_estimate_mm3":tpv,
@@ -151,13 +159,13 @@ def build_plaque_estimates(legacy: pd.DataFrame)->pd.DataFrame:
             "noncalcified_30_130_mm3":nc30_130,
             "fibrous_intermediate_130_350_mm3":mixed130_350,
             "calcified_plaque_volume_mm3":cpv,
-            "ncp_fraction_of_tpv":ncpv/tpv if np.isfinite(tpv) and tpv>0 else np.nan,
-            "lap_fraction_of_tpv":lap/tpv if np.isfinite(tpv) and tpv>0 else np.nan,
+            "ncp_fraction_of_tpv":ncpv/tpv if np.isfinite(ncpv) and np.isfinite(tpv) and tpv>0 else np.nan,
+            "lap_fraction_of_tpv":lap/tpv if np.isfinite(lap) and np.isfinite(tpv) and tpv>0 else np.nan,
             "confirm2_tpv_stage":_stage(tpv,CONFIRM2_TPV_STAGES),
             "confirm2_ncpv_stage":_stage(ncpv,CONFIRM2_NCPV_STAGES),
             "pav_percent":np.nan,
             "pav_status":"NA: no defensible source-space outer-vessel volume for this fused endpoint",
-            "lap_gt_2mm3":bool(np.isfinite(lap) and lap>2.0),
+            "lap_gt_2mm3":(bool(lap>2.0) if np.isfinite(lap) else np.nan),
             "high_risk_plaque_status":"not adjudicable: positive remodeling is not validated in this endpoint",
             "absolute_volume_confidence":confidence,
             "provenance":provenance,
@@ -172,21 +180,22 @@ def build_whole_heart(plaque: pd.DataFrame)->pd.DataFrame:
     tpv=float(plaque.tpv_best_estimate_mm3.sum())
     lower=float(plaque.tpv_strict_or_known_lower_mm3.sum())
     upper_known=float(plaque.loc[plaque.vessel!="LM","tpv_candidate_envelope_upper_mm3"].sum()+plaque.loc[plaque.vessel=="LM","tpv_best_estimate_mm3"].sum())
-    ncp=float(plaque.ncpv_best_estimate_mm3.sum())
-    lap=float(plaque.lap_best_estimate_mm3.sum())
+    known_non_lm=plaque[plaque.vessel!="LM"]
+    ncp_known=float(known_non_lm.ncpv_best_estimate_mm3.sum())
+    lap_known=float(known_non_lm.lap_best_estimate_mm3.sum())
     cp=float(plaque.calcified_plaque_volume_mm3.sum())
     return pd.DataFrame([{
         "aggregate":"MAJOR_VESSEL_TOTAL_LAD_RCA_LCX_LM",
         "tpv_best_estimate_mm3":tpv,
         "tpv_strict_or_known_lower_mm3":lower,
         "tpv_candidate_envelope_upper_known_mm3":upper_known,
-        "ncpv_best_estimate_mm3":ncp,
-        "lap_best_estimate_mm3":lap,
+        "ncpv_known_lower_mm3":ncp_known,
+        "lap_known_lower_mm3":lap_known,
         "calcified_plaque_volume_mm3":cp,
         "confirm2_tpv_stage_best_estimate":_stage(tpv,CONFIRM2_TPV_STAGES),
         "confirm2_tpv_stage_lower":_stage(lower,CONFIRM2_TPV_STAGES),
         "confirm2_tpv_stage_upper_known":_stage(upper_known,CONFIRM2_TPV_STAGES),
-        "confirm2_ncpv_stage_best_estimate":_stage(ncp,CONFIRM2_NCPV_STAGES),
+        "confirm2_ncpv_stage_known_lower":_stage(ncp_known,CONFIRM2_NCPV_STAGES),
         "whole_coronary_tree_equivalence":"NO",
         "reason_not_literal_whole_heart":"Side branches >=1.5 mm are not comprehensively quantified and LM noncalcified plaque is unknown.",
     }])
