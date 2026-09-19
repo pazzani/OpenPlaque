@@ -215,13 +215,22 @@ def _path_component_association(labels,cid,g,path_xyz,radius=ASSOCIATION_RADIUS_
     }
 
 
-def _nearest_gap(assoc_zyx,dt,nearest_idx,g):
+def _aorta_surface_tree(aorta,g):
+    surface=aorta & ~ndi.binary_erosion(aorta,structure=np.ones((3,3,3),bool),border_value=0)
+    z=np.argwhere(surface)
+    if not len(z): raise RuntimeError("Aorta surface is empty")
+    xyz=g.zyx_to_xyz(z)
+    return cKDTree(xyz),z,xyz
+
+
+def _nearest_gap(assoc_zyx,aorta_tree,aorta_surface_zyx,aorta_surface_xyz,g):
     if len(assoc_zyx)==0: return None
-    vals=dt[tuple(assoc_zyx.T)]
-    i=int(np.argmin(vals)); z=assoc_zyx[i]; az=nearest_idx[:,z[0],z[1],z[2]]
-    p=g.zyx_to_xyz([z])[0]; a=g.zyx_to_xyz([az])[0]
+    model_xyz=g.zyx_to_xyz(assoc_zyx)
+    d,idx=aorta_tree.query(model_xyz,k=1)
+    i=int(np.argmin(d)); z=assoc_zyx[i]; j=int(idx[i])
+    az=aorta_surface_zyx[j]; p=model_xyz[i]; a=aorta_surface_xyz[j]
     return {
-        "gap_distance_mm":float(vals[i]),
+        "gap_distance_mm":float(d[i]),
         "model_zyx":[int(x) for x in z],
         "aorta_zyx":[int(x) for x in az],
         "model_xyz_mm":[float(x) for x in p],
@@ -320,23 +329,23 @@ def analyze(drive_root="/content/drive/MyDrive/OpenPlaque",dicom_root="/content/
     p6=_native_mask(prep["cached_series6_prediction"],s6img); a6=_native_mask(prep["cached_series6_aorta"],s6img)
     p7=_native_mask(prep["cached_series7_prediction"],ref)
     labels6,n6=ndi.label(p6,structure=np.ones((3,3,3),np.uint8)); labels7,n7=ndi.label(p7,structure=np.ones((3,3,3),np.uint8))
-    dt6,idx6=ndi.distance_transform_edt(~a6,sampling=g6.spacing_zyx,return_indices=True)
-    dt7,idx7=ndi.distance_transform_edt(~a7,sampling=g7.spacing_zyx,return_indices=True)
+    aorta_tree6,aorta_surface_zyx6,aorta_surface_xyz6=_aorta_surface_tree(a6,g6)
+    aorta_tree7,aorta_surface_zyx7,aorta_surface_xyz7=_aorta_surface_tree(a7,g7)
 
     paths7={n:_load_path(root/p) for n,p in {"LAD":LAD_PATH,"RCA":RCA_PATH,"C6":C6_PATH,"C7":C7_PATH}.items()}
     tx=sitk.TranslationTransform(3); tx.SetParameters(tuple(prep["root_transform_parameters"]))
     paths6={n:_transform_path(p,tx) for n,p in paths7.items()}
 
     rows=[]
-    for series,labels,ncomp,g,paths,dt,idx,ct,cor,aor in [
-        ("series6",labels6,n6,g6,paths6,dt6,idx6,ct6,p6,a6),
-        ("series7",labels7,n7,g7,{n:_resample_path(p,.5) for n,p in paths7.items()},dt7,idx7,ct7,p7,a7),
+    for series,labels,ncomp,g,paths,aorta_tree,aorta_surface_zyx,aorta_surface_xyz,ct,cor,aor in [
+        ("series6",labels6,n6,g6,paths6,aorta_tree6,aorta_surface_zyx6,aorta_surface_xyz6,ct6,p6,a6),
+        ("series7",labels7,n7,g7,{n:_resample_path(p,.5) for n,p in paths7.items()},aorta_tree7,aorta_surface_zyx7,aorta_surface_xyz7,ct7,p7,a7),
     ]:
         for cid in range(1,int(ncomp)+1):
             for pname,path in paths.items():
                 assoc,meta=_path_component_association(labels,cid,g,path)
                 if meta["associated_voxels"]<MIN_ASSOCIATED_VOXELS: continue
-                gap=_nearest_gap(assoc,dt,idx,g); hu=_gap_hu_metrics(ct,g,gap)
+                gap=_nearest_gap(assoc,aorta_tree,aorta_surface_zyx,aorta_surface_xyz,g); hu=_gap_hu_metrics(ct,g,gap)
                 row={"series":series,"component":cid,"path":pname,**meta,**gap,**hu}
                 row["short_gap"]=bool(row["gap_distance_mm"]<=SHORT_GAP_MM)
                 row["contrast_supported"]=bool(
