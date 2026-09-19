@@ -461,26 +461,123 @@ th{{background:#f2f2f2}} .note{{padding:12px;background:#fff8e1;border:1px solid
     return p
 
 
-def run(drive_root="/content/drive/MyDrive/OpenPlaque",output_dir=None):
-    root=Path(drive_root)
-    out=Path(output_dir) if output_dir else root/OUTPUT_DIRNAME
-    out.mkdir(parents=True,exist_ok=True)
-    _write_json(out/"run_state.json",{"status":"RUNNING","algorithm":ALGORITHM,"baseline":BASELINE})
+def _endpoint_cache_ready(endpoint):
+    required=[
+        "plaque_best_estimates_by_vessel.csv",
+        "major_vessel_aggregate.csv",
+        "inflammation_best_estimates_by_vessel.csv",
+        "summary.json",
+        "run_state.json",
+    ]
+    if not all((endpoint/x).is_file() for x in required):
+        return False
+    try:
+        state=_read_json(endpoint/"run_state.json")
+        return state.get("status")=="COMPLETE"
+    except Exception:
+        return False
 
-    from openplaque.plaque_inflammation_best_estimates_v1 import run as endpoint_run
+
+def _load_or_build_endpoint(root,out,use_cached_endpoint_values):
     endpoint=out/"endpoint"
     endpoint.mkdir(parents=True,exist_ok=True)
-    endpoint_run(drive_root=str(root),output_dir=str(endpoint))
-
+    reused=bool(use_cached_endpoint_values and _endpoint_cache_ready(endpoint))
+    if not reused:
+        from openplaque.plaque_inflammation_best_estimates_v1 import run as endpoint_run
+        endpoint_run(drive_root=str(root),output_dir=str(endpoint))
     plaque=pd.read_csv(endpoint/"plaque_best_estimates_by_vessel.csv")
     aggregate=pd.read_csv(endpoint/"major_vessel_aggregate.csv")
     infl=pd.read_csv(endpoint/"inflammation_best_estimates_by_vessel.csv")
+    return endpoint,plaque,aggregate,infl,reused
 
-    vals,validation,expected,extras=compute_voxel_distributions(root)
+
+def _validate_cached_voxels(root,vals):
+    expected=_locked_expectations(root)
+    rows=[]
+    for v in ("RCA","LAD","LCX"):
+        if v not in vals:
+            raise RuntimeError(f"Cached PCAT voxel archive is missing {v}")
+        a=np.asarray(vals[v],float)
+        obs_mean=float(np.mean(a))
+        obs_n=int(len(a))
+        exp=expected[v]
+        mean_delta=float(obs_mean-exp["mean"])
+        vox_delta=int(obs_n-exp["fat_voxels"])
+        rel=abs(vox_delta)/max(exp["fat_voxels"],1)
+        passed=bool(abs(mean_delta)<=MEAN_TOL_HU and rel<=FAT_VOXEL_REL_TOL)
+        rows.append({
+            "vessel":v,
+            "locked_mean_hu":exp["mean"],
+            "recomputed_mean_hu":obs_mean,
+            "mean_delta_hu":mean_delta,
+            "locked_fat_voxels":exp["fat_voxels"],
+            "recomputed_fat_voxels":obs_n,
+            "fat_voxel_delta":vox_delta,
+            "fat_voxel_relative_delta":rel,
+            "locked_segment_length_mm":exp["length"],
+            "voxel_distribution_validation_pass":passed,
+        })
+    validation=pd.DataFrame(rows)
+    if not validation.voxel_distribution_validation_pass.all():
+        raise RuntimeError(
+            "Cached voxel-level PCAT values no longer match locked endpoints:\n"
+            +validation.to_string(index=False)
+        )
+    return validation,expected
+
+
+def _load_or_build_voxel_cache(root,out,use_cached_pcat_voxels):
+    values_path=out/"pcat_voxel_values.npz"
+    extras_path=out/"pcat_voxel_geometry_extras.npz"
+    can_reuse=bool(
+        use_cached_pcat_voxels
+        and values_path.is_file()
+        and extras_path.is_file()
+    )
+    if can_reuse:
+        with np.load(values_path) as z:
+            vals={v:np.asarray(z[v],float) for v in ("RCA","LAD","LCX")}
+        with np.load(extras_path) as z:
+            extras={"RCA_radial_out_mm":np.asarray(z["RCA_radial_out_mm"],float)}
+        validation,expected=_validate_cached_voxels(root,vals)
+        if len(extras["RCA_radial_out_mm"])!=len(vals["RCA"]):
+            raise RuntimeError("Cached RCA radial-distance array does not match cached RCA voxel count")
+        reused=True
+    else:
+        vals,validation,expected,extras=compute_voxel_distributions(root)
+        np.savez_compressed(values_path,**vals)
+        np.savez_compressed(extras_path,**extras)
+        reused=False
     validation.to_csv(out/"pcat_voxel_reconstruction_validation.csv",index=False)
+    return vals,validation,expected,extras,reused
+
+
+def run(
+    drive_root="/content/drive/MyDrive/OpenPlaque",
+    output_dir=None,
+    use_cached_endpoint_values=True,
+    use_cached_pcat_voxels=True,
+):
+    root=Path(drive_root)
+    out=Path(output_dir) if output_dir else root/OUTPUT_DIRNAME
+    out.mkdir(parents=True,exist_ok=True)
+    _write_json(out/"run_state.json",{
+        "status":"RUNNING",
+        "algorithm":ALGORITHM,
+        "baseline":BASELINE,
+        "use_cached_endpoint_values":bool(use_cached_endpoint_values),
+        "use_cached_pcat_voxels":bool(use_cached_pcat_voxels),
+    })
+
+    endpoint,plaque,aggregate,infl,endpoint_cache_reused=_load_or_build_endpoint(
+        root,out,bool(use_cached_endpoint_values)
+    )
+
+    vals,validation,expected,extras,pcat_voxel_cache_reused=_load_or_build_voxel_cache(
+        root,out,bool(use_cached_pcat_voxels)
+    )
     bands=build_voxel_bands(vals)
     bands.to_csv(out/"pcat_voxel_hu_band_decomposition.csv",index=False)
-    np.savez_compressed(out/"pcat_voxel_values.npz",**vals)
 
     figures=[]
     figures.append(_plaque_chart(plaque,out))
@@ -502,6 +599,12 @@ def run(drive_root="/content/drive/MyDrive/OpenPlaque",output_dir=None):
         "figures":[p.name for p in figures],
         "voxel_validation_pass":bool(validation.voxel_distribution_validation_pass.all()),
         "voxel_validation":validation.to_dict("records"),
+        "cache_usage":{
+            "endpoint_values_requested":bool(use_cached_endpoint_values),
+            "endpoint_values_reused":bool(endpoint_cache_reused),
+            "pcat_voxels_requested":bool(use_cached_pcat_voxels),
+            "pcat_voxels_reused":bool(pcat_voxel_cache_reused),
+        },
         "scientific_boundaries":{
             "plaque":"OpenPlaque research best-estimate proxy; not Cleerly output.",
             "pcat":"Direct -190 to -30 HU PCAT; not proprietary Caristo FAI-Score.",
@@ -512,7 +615,13 @@ def run(drive_root="/content/drive/MyDrive/OpenPlaque",output_dir=None):
         }
     }
     _write_json(out/"summary.json",summary)
-    _write_json(out/"run_state.json",{"status":"COMPLETE","algorithm":ALGORITHM,"result_status":"PLAQUE_INFLAMMATION_FINAL_VISUALIZATION_COMPLETE"})
+    _write_json(out/"run_state.json",{
+        "status":"COMPLETE",
+        "algorithm":ALGORITHM,
+        "result_status":"PLAQUE_INFLAMMATION_FINAL_VISUALIZATION_COMPLETE",
+        "endpoint_values_reused":bool(endpoint_cache_reused),
+        "pcat_voxels_reused":bool(pcat_voxel_cache_reused),
+    })
 
     zpath=out/"OPENPLAQUE_PLAQUE_INFLAMMATION_FINAL_VISUALIZATION_V2_RESULTS.zip"
     with zipfile.ZipFile(zpath,"w",zipfile.ZIP_DEFLATED) as z:
