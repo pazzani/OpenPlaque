@@ -26,6 +26,8 @@ def test_plaque_fusion_reconstructs_ncpv():
     assert np.isclose(lad.tpv_candidate_envelope_upper_mm3,10.0)
     lm=p[p.vessel=="LM"].iloc[0]
     assert np.isnan(lm.tpv_candidate_envelope_upper_mm3)
+    assert np.isnan(lm.ncpv_best_estimate_mm3)
+    assert lm.confirm2_ncpv_stage=="NA"
 
 
 def test_whole_major_vessel_not_literal_whole_heart():
