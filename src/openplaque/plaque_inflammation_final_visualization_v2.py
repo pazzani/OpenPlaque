@@ -481,10 +481,19 @@ def _endpoint_cache_ready(endpoint):
 def _load_or_build_endpoint(root,out,use_cached_endpoint_values):
     endpoint=out/"endpoint"
     endpoint.mkdir(parents=True,exist_ok=True)
-    reused=bool(use_cached_endpoint_values and _endpoint_cache_ready(endpoint))
-    if not reused:
-        from openplaque.plaque_inflammation_best_estimates_v1 import run as endpoint_run
-        endpoint_run(drive_root=str(root),output_dir=str(endpoint))
+    reused=False
+    if bool(use_cached_endpoint_values) and _endpoint_cache_ready(endpoint):
+        try:
+            plaque=pd.read_csv(endpoint/"plaque_best_estimates_by_vessel.csv")
+            aggregate=pd.read_csv(endpoint/"major_vessel_aggregate.csv")
+            infl=pd.read_csv(endpoint/"inflammation_best_estimates_by_vessel.csv")
+            reused=True
+            return endpoint,plaque,aggregate,infl,reused
+        except Exception:
+            reused=False
+
+    from openplaque.plaque_inflammation_best_estimates_v1 import run as endpoint_run
+    endpoint_run(drive_root=str(root),output_dir=str(endpoint))
     plaque=pd.read_csv(endpoint/"plaque_best_estimates_by_vessel.csv")
     aggregate=pd.read_csv(endpoint/"major_vessel_aggregate.csv")
     infl=pd.read_csv(endpoint/"inflammation_best_estimates_by_vessel.csv")
@@ -535,20 +544,26 @@ def _load_or_build_voxel_cache(root,out,use_cached_pcat_voxels):
         and extras_path.is_file()
     )
     if can_reuse:
-        with np.load(values_path) as z:
-            vals={v:np.asarray(z[v],float) for v in ("RCA","LAD","LCX")}
-        with np.load(extras_path) as z:
-            extras={"RCA_radial_out_mm":np.asarray(z["RCA_radial_out_mm"],float)}
-        validation,expected=_validate_cached_voxels(root,vals)
-        if len(extras["RCA_radial_out_mm"])!=len(vals["RCA"]):
-            raise RuntimeError("Cached RCA radial-distance array does not match cached RCA voxel count")
-        reused=True
-    else:
-        vals,validation,expected,extras=compute_voxel_distributions(root)
-        np.savez_compressed(values_path,**vals)
-        np.savez_compressed(extras_path,**extras)
-        reused=False
+        try:
+            with np.load(values_path) as z:
+                vals={v:np.asarray(z[v],float) for v in ("RCA","LAD","LCX")}
+            with np.load(extras_path) as z:
+                extras={"RCA_radial_out_mm":np.asarray(z["RCA_radial_out_mm"],float)}
+            validation,expected=_validate_cached_voxels(root,vals)
+            if len(extras["RCA_radial_out_mm"])!=len(vals["RCA"]):
+                raise RuntimeError("Cached RCA radial-distance array does not match cached RCA voxel count")
+            reused=True
+            validation.to_csv(out/"pcat_voxel_reconstruction_validation.csv",index=False)
+            return vals,validation,expected,extras,reused
+        except Exception:
+            # Invalid/stale cache: rebuild from source-space CT and refresh it.
+            pass
+
+    vals,validation,expected,extras=compute_voxel_distributions(root)
+    np.savez_compressed(values_path,**vals)
+    np.savez_compressed(extras_path,**extras)
     validation.to_csv(out/"pcat_voxel_reconstruction_validation.csv",index=False)
+    reused=False
     return vals,validation,expected,extras,reused
 
 
