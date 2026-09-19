@@ -557,6 +557,7 @@ def run(
     output_dir=None,
     use_cached_endpoint_values=True,
     use_cached_pcat_voxels=True,
+    export_zip=True,
 ):
     root=Path(drive_root)
     out=Path(output_dir) if output_dir else root/OUTPUT_DIRNAME
@@ -567,6 +568,7 @@ def run(
         "baseline":BASELINE,
         "use_cached_endpoint_values":bool(use_cached_endpoint_values),
         "use_cached_pcat_voxels":bool(use_cached_pcat_voxels),
+        "export_zip":bool(export_zip),
     })
 
     endpoint,plaque,aggregate,infl,endpoint_cache_reused=_load_or_build_endpoint(
@@ -624,10 +626,17 @@ def run(
     })
 
     zpath=out/"OPENPLAQUE_PLAQUE_INFLAMMATION_FINAL_VISUALIZATION_V2_RESULTS.zip"
-    with zipfile.ZipFile(zpath,"w",zipfile.ZIP_DEFLATED) as z:
-        for p in out.rglob("*"):
-            if p.is_file() and p!=zpath:
-                z.write(p,p.relative_to(out))
+    if bool(export_zip):
+        with zipfile.ZipFile(zpath,"w",zipfile.ZIP_DEFLATED) as z:
+            for p in out.rglob("*"):
+                if p.is_file() and p!=zpath:
+                    z.write(p,p.relative_to(out))
+    elif zpath.exists():
+        zpath.unlink()
+
+    summary["zip_exported"]=bool(export_zip)
+    summary["zip_path"]=str(zpath) if bool(export_zip) else None
+    _write_json(out/"summary.json",summary)
     return summary
 
 
