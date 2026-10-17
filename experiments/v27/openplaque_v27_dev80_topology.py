@@ -33,6 +33,8 @@ def save(p,thing):
     os.replace(tmp,p)
 
 def frozen():
+    print("V27 preflight: checking pinned V26 evaluator:",V26_CODE,flush=True)
+    if not V26_CODE.is_file():raise FileNotFoundError(f"Missing frozen V26 source: {V26_CODE}")
     if digest(V26_CODE)!=EXPECTED_V26_SHA:raise RuntimeError("STOP: V26 source fingerprint mismatch")
     spec=importlib.util.spec_from_file_location("openplaque_v26_pinned",str(V26_CODE))
     m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
@@ -42,18 +44,26 @@ def frozen():
     return m
 
 def cohort():
-    ids=[x.strip() for x in (BASE/"internal_dev_80_frozen.txt").read_text().splitlines() if x.strip()]
+    print("V27 preflight: checking DEV80 list under",BASE,flush=True)
+    split_file=BASE/"internal_dev_80_frozen.txt"
+    if not split_file.is_file():raise FileNotFoundError(f"Missing frozen DEV80 split: {split_file}")
+    ids=[x.strip() for x in split_file.read_text().splitlines() if x.strip()]
     if len(ids)!=80 or len(set(ids))!=80:raise RuntimeError("Wrong DEV80 size")
     if hashlib.sha256("".join(x+"\n" for x in sorted(ids,key=int)).encode()).hexdigest()!=DEV_SHA:
         raise RuntimeError("STOP: frozen DEV80 checksum")
+    print("V27 preflight: checking V26 provenance under",V26,flush=True)
+    for source_name in ("manifest_v26.json","run_status_v26.json"):
+        p=V26/source_name
+        if not p.is_file():raise FileNotFoundError(f"Missing completed V26 provenance: {p}")
     manifest=load(V26/"manifest_v26.json");status=load(V26/"run_status_v26.json")
     if status["status"]!="COMPLETE_16_NEW_DEV_CASES" or manifest["model_sha256"]!=MODEL_SHA or manifest["primary_variant"]!="lm_ridge_only":
         raise RuntimeError("STOP: V26 source provenance")
     previous=list(manifest["pilot_case_ids"])+list(manifest["independent_development_case_ids"])
-    if len(previous)!=len(set(previous))!=28:raise RuntimeError("Malformed prior case IDs")
+    if len(previous)!=28 or len(set(previous))!=28:raise RuntimeError("Malformed or duplicated V26 prior case IDs")
     if len(previous)!=28 or not set(previous)<=set(ids):raise RuntimeError("Invalid previous DEV28")
     remaining=[x for x in sorted(ids,key=int) if x not in set(previous)]
     if len(remaining)!=52:raise RuntimeError("Incorrect remaining DEV52")
+    print("V27 preflight: checking 28 completed V26 case reports and masks",flush=True)
     for c in previous:
         if not (V26/"per_case"/(c+".json")).is_file():raise FileNotFoundError("V26 case "+c)
         if not (V26/"candidate_masks"/(c+".v26_primary_4head_native.nii.gz")).is_file():
@@ -65,6 +75,7 @@ def cohort():
         no_training=True,no_test_reads=True,no_reference_guided_proposals=True,
         no_model_or_artery_promotion=True,unknown_background_not_negative=True)
     p=OUT/"manifest_v27.json"
+    print("V27 preflight: checking original V27 manifest and output destination",p,flush=True)
     if p.exists() and load(p)!=plan:raise RuntimeError("STOP: mismatching V27 experiment manifest")
     if not p.exists():save(p,plan)
     return previous,remaining
@@ -274,7 +285,15 @@ if __name__=="__main__":
     args=a.parse_args()
     if args.stage=="test":test()
     elif args.stage=="preflight":
-        p,r=cohort();frozen();print("PASS: 28 existing, 52 new; frozen source checksum")
+        try:
+            p,r=cohort()
+            print(f"V27 preflight: DEV80 cohort ready; {len(p)} previous and {len(r)} new",flush=True)
+            frozen()
+            print("PASS: 28 existing, 52 new; frozen source checksum",flush=True)
+        except Exception:
+            print("V27 PREFLIGHT ERROR: full underlying traceback follows",file=sys.stderr,flush=True)
+            traceback.print_exc()
+            raise
     elif args.stage=="run":run(args.force)
     else:
         p,r=cohort();print(summary(p,r,"REPORT_ONLY")["new52_candidate_gate"])
