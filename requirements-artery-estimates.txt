@@ -1,12 +1,13 @@
-# Direct dependencies for the corrected notebook 13; legacy Colabs are unaffected.
-# Run in a fresh Python 3.10-3.12 Colab GPU session. Each run saves pip freeze.
-numpy==2.0.2
-scipy==1.14.1
-pandas==2.2.3
-SimpleITK==2.4.0
-pydicom==3.0.1
-matplotlib==3.9.2
-scikit-image==0.24.0
-nibabel==5.3.2
-nnunetv2==2.5.1
-torch==2.5.1
+# Runtime-compatible scientific packages; pip honors each wheel's Python support.
+# Keep compatible Colab packages installed; each run records exact pip freeze.
+# The setup helper constrains torch to Colab's installed CUDA-enabled build.
+numpy>=2.0.2,<3
+scipy>=1.14.1,<2
+pandas>=2.2.3,<4
+SimpleITK>=2.4.0,<3
+pydicom>=3.0.1,<4
+matplotlib>=3.9.2,<4
+scikit-image>=0.24.0,<1
+nibabel>=5.3.2,<6
+nnunetv2==2.6.2
+torch>=2.6

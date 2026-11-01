@@ -5,10 +5,16 @@ version of the uploaded older notebook. The newer upstream notebook 13 includes
 additional workflows and is intentionally preserved. Other notebooks and shared
 pipeline defaults are unchanged. Only this notebook imports `artery_estimates`.
 
-The corrected notebook pins the library commit and direct dependencies, checks
+The corrected notebook pins the library commit and nnU-Net version, checks
 installation failures, and saves a complete installed-environment snapshot.
-Use a fresh Python 3.10-3.12 Colab GPU runtime. Restart if setup reports that an
-already imported package changed. CUDA/driver compatibility remains runtime-dependent.
+Scientific dependency ranges let pip select wheels compatible with the current
+Python runtime, including Python 3.13.16. Setup constrains PyTorch to the runtime's
+installed build, preserving Colab's CUDA installation instead of downgrading it.
+nnU-Net 2.6.2 explicitly loads model checkpoints with the behavior required by
+newer PyTorch. The runtime must supply PyTorch >=2.6. Restart if setup reports that
+an already imported package changed. CUDA/driver compatibility and actual private
+model inference still require validation in Colab. Dependency resolution is not a
+fixed cross-runtime lock; exact versions and their fingerprint are saved per run.
 
 ## Inputs and migration
 
