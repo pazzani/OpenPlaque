@@ -163,7 +163,7 @@ def validate_model(results_root, dataset='Dataset001_CCTA_DHM', folds=(0, 1, 2, 
     if any(not isinstance(v, int) for v in labels.values()) or set(labels.values()) != {0, 1, 2}:
         raise ValueError('Expected model labels 0=background, 1=vessel, 2=plaque; inspect dataset.json')
     names = {v: k.lower().replace('_', ' ').strip() for k, v in labels.items()}
-    if names[0] != 'background' or names[1] not in ('vessel', 'lumen', 'coronary', 'coronary artery') or names[2] != 'plaque':
+    if names[0] != 'background' or names[1] not in ('vessel', 'normal vessel', 'lumen', 'coronary', 'coronary artery') or names[2] != 'plaque':
         raise ValueError(f'Unrecognized model label semantics: {labels}; verify the model before use')
     return {str(p.relative_to(results_root)): file_sha256(p) for p in paths}
 

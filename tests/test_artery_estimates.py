@@ -172,10 +172,11 @@ def test_actual_dicom_shared_folder_selects_requested_uid(tmp_path):
     assert np.all(study.load_series(1)[1] == 100)
 
 
-def test_model_checks_all_requested_folds(tmp_path):
+@pytest.mark.parametrize('vessel_name', ['vessel', 'normal_vessel'])
+def test_model_checks_all_requested_folds(tmp_path, vessel_name):
     folder = tmp_path / 'Dataset001_CCTA_DHM/nnUNetTrainer__nnUNetPlans__3d_fullres'
     folder.mkdir(parents=True)
-    (folder / 'dataset.json').write_text(json.dumps({'labels': {'background': 0, 'vessel': 1, 'plaque': 2}}))
+    (folder / 'dataset.json').write_text(json.dumps({'labels': {'background': 0, vessel_name: 1, 'plaque': 2}}))
     (folder / 'plans.json').write_text('{}')
     for f in range(4):
         (folder / f'fold_{f}').mkdir()
@@ -183,6 +184,12 @@ def test_model_checks_all_requested_folds(tmp_path):
     with pytest.raises(FileNotFoundError, match='fold_4'):
         validate_model(tmp_path)
     assert len(validate_model(tmp_path, folds=(0, 1))) == 4
+    (folder / 'dataset.json').write_text(json.dumps({'labels': {'background': 0, 'myocardium': 1, 'plaque': 2}}))
+    with pytest.raises(ValueError, match='Unrecognized model label semantics'):
+        validate_model(tmp_path, folds=(0, 1))
+    (folder / 'dataset.json').write_text(json.dumps({'labels': {'background': 0, vessel_name: 2, 'plaque': 1}}))
+    with pytest.raises(ValueError, match='Unrecognized model label semantics'):
+        validate_model(tmp_path, folds=(0, 1))
 
 
 @pytest.mark.parametrize('edges', [(0, 0, 30, 350), (0, 30, 130, np.nan)])
