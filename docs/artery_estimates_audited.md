@@ -54,6 +54,27 @@ CSV, charts and HTML all preserve the model/candidate distinction. HTML embeds i
 chart and derives thresholds from configuration. A manifest records input/model
 checksums, series, geometry, mask source/checksum, commit and measurement settings.
 
+## Artery visualization
+
+Section 7 provides one interactive tab per artery, with CT-only and overlaid slices,
+image-axis selection, slice navigation, CT window controls, opacity and vessel/plaque
+toggles. Each artery starts at its largest plaque slice (or largest vessel slice
+when plaque is absent). Cyan represents vessel label 1. Plaque uses Low attenuation
+(red), Noncalcified (orange), Mixed/intermediate (blue), Calcified (white), and
+Unclassified plaque (purple for below-range/nonfinite label-2 values).
+
+Rotatable Plotly surfaces preserve each image's spacing, origin and direction.
+They display model labels only, never candidates. Each artery is shown separately;
+derived-image grids are not assumed to share a common anatomical frame.
+`MESH_STEP_SIZE=1` retains native grid sampling; larger steps can omit fine detail
+and affect visualization only. Measurement arrays are unchanged by the viewers.
+
+PNG overviews are embedded in the main HTML report. Standalone, offline-capable
+3D HTML viewers are linked from it; download these beside the report to retain
+working links. The interactive slice controls require the running notebook.
+Set `SHOW_INTERACTIVE_VIEWS=False` for export-only operation, or
+`CREATE_3D_VIEWS=False` to skip surface generation. Empty masks are shown explicitly.
+
 ## Validation
 
 Run `PYTHONPATH=src python -m pytest tests/test_artery_estimates.py

@@ -218,7 +218,7 @@ def test_notebook_measurement_and_exports_with_synthetic_reports(tmp_path):
         study=SimpleNamespace(study_sha256='test'), model_identity={},
         provenance=[], SERIES_OVERRIDES={}, display=lambda x: None)
     exec(''.join(nb['cells'][12]['source']), context)
-    exec(''.join(nb['cells'][14]['source']), context)
+    exec(''.join(nb['cells'][-1]['source']), context)
     html = context['html_path'].read_text(encoding='utf-8')
     assert 'data:image/png;base64,' in html
     assert '-20 to &lt;20 HU' in html
